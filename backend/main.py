@@ -2,11 +2,14 @@
 import re
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 
+import auth
 import pdf_ops
 import storage
 
@@ -15,9 +18,32 @@ app = FastAPI(title="PDF Studio API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "detail": exc.detail},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = []
+    for err in exc.errors():
+        loc = " -> ".join(str(x) for x in err.get("loc", []))
+        msg = err.get("msg")
+        errors.append(f"{loc}: {msg}")
+    error_msg = "; ".join(errors) or "Validation error"
+    return JSONResponse(
+        status_code=422,
+        content={"error": error_msg, "detail": error_msg},
+    )
 
 
 def _meta_or_404(file_id: str) -> dict:
@@ -40,11 +66,131 @@ def _stem(meta: dict) -> str:
     return re.sub(r"\.pdf$", "", meta["name"], flags=re.I)
 
 
+# ------------------------------------------------------------ authentication
+
+class RegisterBody(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+class LoginBody(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/register")
+def register(body: RegisterBody, response: Response):
+    name = body.name.strip()
+    email = body.email.strip().lower()
+    password = body.password
+
+    if not name or not email or not password:
+        raise HTTPException(400, "Name, email, and password are required")
+
+    if len(password) < 6:
+        raise HTTPException(400, "Password must be at least 6 characters long")
+
+    existing_user = auth.get_user_by_email(email)
+    if existing_user:
+        raise HTTPException(400, "User already exists with this email")
+
+    user = auth.create_user(name, email, password)
+    token = auth.sign_jwt({"userId": user["id"], "email": user["email"], "name": user["name"]})
+
+    response.set_cookie(
+        key="qt_token",
+        value=token,
+        httponly=True,
+        max_age=24 * 60 * 60,  # 24 hours
+        samesite="lax",
+        path="/"
+    )
+
+    return {
+        "success": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"]
+        }
+    }
+
+
+@app.post("/api/auth/login")
+def login(body: LoginBody, response: Response):
+    email = body.email.strip().lower()
+    password = body.password
+
+    if not email or not password:
+        raise HTTPException(400, "Email and password are required")
+
+    user = auth.get_user_by_email(email)
+    if not user:
+        raise HTTPException(401, "Invalid email or password")
+
+    if not auth.verify_password(password, user["passwordHash"]):
+        raise HTTPException(401, "Invalid email or password")
+
+    token = auth.sign_jwt({"userId": user["id"], "email": user["email"], "name": user["name"]})
+
+    response.set_cookie(
+        key="qt_token",
+        value=token,
+        httponly=True,
+        max_age=24 * 60 * 60,  # 24 hours
+        samesite="lax",
+        path="/"
+    )
+
+    return {
+        "success": True,
+        "user": {
+            "id": user["id"],
+            "email": user["email"],
+            "name": user["name"]
+        }
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(response: Response):
+    response.delete_cookie(
+        key="qt_token",
+        path="/"
+    )
+    return {"success": True}
+
+
+@app.get("/api/auth/me")
+def me(request: Request):
+    token = request.cookies.get("qt_token")
+    if not token:
+        return {"loggedIn": False}
+
+    payload = auth.verify_jwt(token)
+    if not payload:
+        return {"loggedIn": False}
+
+    return {
+        "loggedIn": True,
+        "user": {
+            "email": payload.get("email"),
+            "name": payload.get("name")
+        }
+    }
+
+
 # ------------------------------------------------------------ files
 
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/health")
+def root_health():
+    return {"status": "ok", "message": "Backend is running"}
 
 
 @app.post("/api/files/upload")

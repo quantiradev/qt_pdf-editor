@@ -1,0 +1,18 @@
+{
+  "b1d30748e9c7": {
+    "id": "b1d30748e9c7",
+    "name": "Session 4 - Gemini Gems.pdf",
+    "size": 344354,
+    "pages": 5,
+    "version": 15,
+    "created_at": 1783574029.7043316,
+    "updated_at": 1783580206.1464233,
+    "opened_at": 1783580206.1464233,
+    "deleted": false,
+    "undo": [],
+    "redo": [
+      "b1d30748e9c7-13-5285fa.pdf",
+      "b1d30748e9c7-14-d483cd.pdf"
+    ]
+  }
+}
