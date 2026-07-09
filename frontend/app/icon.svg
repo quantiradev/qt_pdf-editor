@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="100%" height="100%">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4f6cf7" />
+      <stop offset="100%" stop-color="#3b82f6" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1" flood-opacity="0.15" />
+    </filter>
+  </defs>
+  <!-- Background Badge -->
+  <rect x="2" y="2" width="28" height="28" rx="7" fill="url(#grad)" filter="url(#shadow)" />
+  <!-- Document Icon Outline -->
+  <path d="M9 8h9l5 5v11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2z" fill="#ffffff" opacity="0.15" />
+  <!-- Inner White Logo Text "QT" -->
+  <text x="16" y="21" font-family="system-ui, -apple-system, sans-serif" font-size="11" font-weight="900" fill="#ffffff" text-anchor="middle" letter-spacing="-0.5">QT</text>
+  <!-- Small Accent Pencil/Edit tip -->
+  <path d="M23 9l-2 2 1 1 2-2z" fill="#3eff8e" />
+</svg>
