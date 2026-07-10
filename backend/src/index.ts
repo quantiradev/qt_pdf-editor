@@ -17,7 +17,10 @@ app.use(cookieParser());
 // CORS configuration (allow requests from Next.js dev server with credentials)
 app.use(
   cors({
-    origin: "http://localhost:3000",
+    origin: [
+      "http://localhost:3000",
+      "https://qt-pdf-editor.vercel.app",
+    ],
     credentials: true,
   })
 );
