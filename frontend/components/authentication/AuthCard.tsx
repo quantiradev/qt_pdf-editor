@@ -2,6 +2,8 @@
 
 import React, { useState, useEffect } from "react";
 
+const AUTH_API_URL = process.env.NEXT_PUBLIC_AUTH_API_URL ?? "";
+
 interface AuthCardProps {
   onSuccess: (email: string) => void;
   showToast: (message: string, type: "success" | "error" | "info") => void;
@@ -105,7 +107,10 @@ export default function AuthCard({ onSuccess, showToast }: AuthCardProps) {
     setLoading(true);
 
     try {
-      const endpoint = activeTab === "login" ? "/api/auth/login" : "/api/auth/register";
+      const endpoint =
+  activeTab === "login"
+    ? `${AUTH_API_URL}/api/auth/login`
+    : `${AUTH_API_URL}/api/auth/register`;
       const body = activeTab === "login"
         ? { email, password }
         : { name, email, password };
@@ -148,7 +153,7 @@ export default function AuthCard({ onSuccess, showToast }: AuthCardProps) {
       const password = `oauth_${platform.toLowerCase()}_secure_123`;
       
       // Try to register first, if fails because exists, then login
-      let res = await fetch("/api/auth/register", {
+      let res = await fetch(`${AUTH_API_URL}/api/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, email, password }),
@@ -156,7 +161,7 @@ export default function AuthCard({ onSuccess, showToast }: AuthCardProps) {
       
       if (!res.ok) {
         // Fallback to login
-        res = await fetch("/api/auth/login", {
+        res = await fetch(`${AUTH_API_URL}/api/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
