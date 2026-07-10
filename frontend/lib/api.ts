@@ -1,7 +1,8 @@
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 import type { Annot, BakedNote, FileMeta, OutlineItem, TextBlock } from "./types";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
+  const res = await fetch(`${API_URL}${url}`, init);
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
