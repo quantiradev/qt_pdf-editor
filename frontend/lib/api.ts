@@ -40,7 +40,8 @@ export const api = {
   restore: (id: string) =>
     req<{ ok: boolean }>(`/api/files/${id}/restore`, { method: "POST" }),
 
-  contentUrl: (id: string, version: number) => `/api/files/${id}/content?v=${version}`,
+  contentUrl: (id: string, version: number) =>
+  `${API_URL}/api/files/${id}/content?v=${version}`,
 
   outline: (id: string) => req<OutlineItem[]>(`/api/files/${id}/outline`),
   textBlocks: (id: string, page: number) =>
@@ -79,8 +80,8 @@ export const api = {
 
   exportBlob: async (id: string, format: string, pages: string, dpi: number) => {
     const res = await fetch(
-      `/api/files/${id}/export?format=${format}&pages=${encodeURIComponent(pages)}&dpi=${dpi}`
-    );
+  `${API_URL}/api/files/${id}/export?format=${format}&pages=${encodeURIComponent(pages)}&dpi=${dpi}`
+);
     if (!res.ok) {
       let msg = `${res.status}`;
       try { msg = (await res.json()).detail ?? msg; } catch {}
@@ -91,5 +92,6 @@ export const api = {
     return { blob: await res.blob(), name: m?.[1] ?? `export.${format}` };
   },
 
-  downloadUrl: (id: string) => `/api/files/${id}/download`,
+  downloadUrl: (id: string) =>
+  `${API_URL}/api/files/${id}/download`,
 };
