@@ -3,6 +3,8 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+
 // Subcomponents modularized under components/landing/
 import Header from "../components/landing/Header";
 import Hero from "../components/landing/Hero";
@@ -62,7 +64,10 @@ export default function Home() {
     try {
       const fd = new FormData();
       fd.append("file", file);
-      const res = await fetch("/api/files/upload", { method: "POST", body: fd });
+      const res = await fetch(`${API_URL}/api/files/upload`, {
+  method: "POST",
+  body: fd,
+});
       if (!res.ok) {
         let msg = `Upload failed (${res.status})`;
         try { const j = await res.json(); if (j?.detail) msg = j.detail; } catch {}
