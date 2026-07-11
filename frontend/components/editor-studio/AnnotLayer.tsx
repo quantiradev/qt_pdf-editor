@@ -99,7 +99,7 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
     };
   };
 
-  const selectable = s.tool === "select";
+  const selectable = !s.previewMode && s.tool === "select";
 
   return (
     <div className="annot-layer">
@@ -305,12 +305,22 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         className={`annot-item hit ${s.selectedId === a.id ? "sel-outline" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom,
-          pointerEvents: selectable ? "auto" : "none",
-          cursor: selectable ? "move" : undefined,
+          pointerEvents: "auto",
+          cursor: selectable ? "move" : "pointer",
         }}
-        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
-        onDoubleClick={() => s.set({ rightOpen: true, rightTab: "comments", selectedId: a.id })}
-        title={a.text || "Sticky note — double-click to write the comment"}
+        onPointerDown={(e) => {
+          if (selectable) {
+            startDrag(e, a, "move");
+          } else {
+            e.stopPropagation();
+          }
+        }}
+        onDoubleClick={() => {
+          if (selectable) {
+            s.set({ rightOpen: true, rightTab: "comments", selectedId: a.id });
+          }
+        }}
+        title={a.text || "Sticky note"}
       >
         <div className="note-pin" style={{ background: a.color, transform: `scale(${Math.max(0.7, zoom)})`, transformOrigin: "top left" }}>
           <StickyNote size={15} />
@@ -325,10 +335,17 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         className={`annot-item hit link-box ${s.selectedId === a.id ? "sel-outline" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom, width: a.w * zoom, height: a.h * zoom,
-          pointerEvents: selectable ? "auto" : "none",
-          cursor: selectable ? "move" : undefined,
+          pointerEvents: "auto",
+          cursor: selectable ? "move" : "pointer",
         }}
-        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
+        onPointerDown={(e) => {
+          if (selectable) {
+            startDrag(e, a, "move");
+          } else {
+            e.stopPropagation();
+            window.open(a.url, "_blank", "noopener,noreferrer");
+          }
+        }}
       >
         {s.selectedId === a.id && <span className="link-chip">{a.url}</span>}
       </div>

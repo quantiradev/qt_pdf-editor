@@ -66,18 +66,21 @@ export default function StatusBar() {
         onClick={() => s.set({ viewMode: "single" })}
       ><SinglePageIcon size={14} /></button>
 
-      <div className="divider-v" />
-
-      <button
-        className={`icon-btn ${s.showGrid ? "active" : ""}`}
-        style={{ width: 26, height: 26 }} title="Toggle layout grid"
-        onClick={() => s.set({ showGrid: !s.showGrid })}
-      ><LayoutGrid size={14} /></button>
-      <button
-        className={`icon-btn ${s.snap ? "active" : ""}`}
-        style={{ width: 26, height: 26 }} title="Snap to grid (8pt)"
-        onClick={() => s.set({ snap: !s.snap })}
-      ><Magnet size={14} /></button>
+      {!s.previewMode && (
+        <>
+          <div className="divider-v" />
+          <button
+            className={`icon-btn ${s.showGrid ? "active" : ""}`}
+            style={{ width: 26, height: 26 }} title="Toggle layout grid"
+            onClick={() => s.set({ showGrid: !s.showGrid })}
+          ><LayoutGrid size={14} /></button>
+          <button
+            className={`icon-btn ${s.snap ? "active" : ""}`}
+            style={{ width: 26, height: 26 }} title="Snap to grid (8pt)"
+            onClick={() => s.set({ snap: !s.snap })}
+          ><Magnet size={14} /></button>
+        </>
+      )}
 
       <div style={{ flex: 1 }} />
 

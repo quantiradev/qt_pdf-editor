@@ -23,6 +23,7 @@ export default function Editor({ id }: { id: string }) {
   const s = useEditor();
 
   useEffect(() => {
+    s.set({ previewMode: false });
     s.loadFile(id);
     // expose for debugging / scripted testing in dev
     (window as any).__pdfstore = useEditor;

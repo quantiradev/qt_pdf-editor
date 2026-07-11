@@ -72,6 +72,7 @@ interface EditorState {
   saving: boolean;
   busy: string | null;
   toasts: Toast[];
+  previewMode: boolean;
 
   // actions
   set: (p: Partial<EditorState>) => void;
@@ -103,6 +104,7 @@ interface EditorState {
   ensureSaved: () => Promise<boolean>;
   runOp: (label: string, fn: () => Promise<unknown>) => Promise<boolean>;
   fetchTextBlocks: (page: number) => void;
+  updateTextBlock: (page: number, index: number, patch: Partial<TextBlock>) => void;
   refreshNotes: () => Promise<void>;
 }
 
@@ -166,6 +168,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   saving: false,
   busy: null,
   toasts: [],
+  previewMode: false,
 
   set: (p) => set(p),
 
@@ -420,10 +423,33 @@ export const useEditor = create<EditorState>((set, get) => ({
     if (!fileId || textBlocks[page]) return;
     set({ textBlocks: { ...textBlocks, [page]: "loading" } });
     api.textBlocks(fileId, page)
-      .then((blocks) =>
-        set((s) => ({ textBlocks: { ...s.textBlocks, [page]: blocks } })))
+      .then((blocks) => {
+        const mapped = (blocks || []).map((b: any) => ({
+          ...b,
+          origX: b.origX ?? b.x,
+          origY: b.origY ?? b.y,
+          origW: b.origW ?? b.w,
+          origH: b.origH ?? b.h,
+        }));
+        set((s) => ({ textBlocks: { ...s.textBlocks, [page]: mapped } }));
+      })
       .catch(() =>
         set((s) => ({ textBlocks: { ...s.textBlocks, [page]: [] } })));
+  },
+
+  updateTextBlock: (page, index, patch) => {
+    set((s) => {
+      const pageBlocks = s.textBlocks[page];
+      if (!Array.isArray(pageBlocks)) return {};
+      const nextBlocks = [...pageBlocks];
+      nextBlocks[index] = { ...nextBlocks[index], ...patch } as TextBlock;
+      return {
+        textBlocks: {
+          ...s.textBlocks,
+          [page]: nextBlocks,
+        },
+      };
+    });
   },
 
   refreshNotes: async () => {

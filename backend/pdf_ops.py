@@ -123,6 +123,318 @@ def _insert_textbox_fit(page: fitz.Page, rect: fitz.Rect, text: str, *,
             return
 
 
+def _block_rect(b: dict) -> fitz.Rect:
+    return fitz.Rect(b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])
+
+
+def _rect_overlap_area(a: fitz.Rect, b: dict) -> float:
+    inter = a & _block_rect(b)
+    return inter.get_area() if not inter.is_empty else 0.0
+
+
+def _estimate_text_height(text: str, width: float, font: str, size: float) -> float:
+    """Accurately estimate the vertical space needed for text inside a fixed-width box using word wrapping."""
+    if not text or not text.strip():
+        return size * 1.25 + 4
+    line_h = size * 1.25
+    usable_w = max(width, 20.0)
+    total_lines = 0
+    
+    # Try to get space width
+    try:
+        space_w = fitz.get_text_length(" ", fontname=font, fontsize=size)
+    except Exception:
+        space_w = size * 0.25
+
+    for para in text.split("\n"):
+        if not para.strip():
+            total_lines += 1
+            continue
+            
+        words = para.split(" ")
+        current_line_w = 0
+        lines_in_para = 0
+        
+        for w in words:
+            if not w:  # consecutive spaces
+                current_line_w += space_w
+                continue
+            try:
+                ww = fitz.get_text_length(w, fontname=font, fontsize=size)
+            except Exception:
+                ww = len(w) * size * 0.55
+                
+            if current_line_w == 0:
+                current_line_w = ww
+                if lines_in_para == 0:
+                    lines_in_para = 1
+            else:
+                if current_line_w + space_w + ww <= usable_w:
+                    current_line_w += space_w + ww
+                else:
+                    lines_in_para += 1
+                    current_line_w = ww
+                    
+        total_lines += max(1, lines_in_para)
+        
+    return total_lines * line_h + 8  # Add padding to avoid rounding errors
+
+
+def _extract_page_text_blocks(page: fitz.Page) -> list[dict]:
+    """Editable text blocks for one open page (same output as get_text_blocks)."""
+    d = page.get_text("dict")
+    out = []
+    for block in d.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        parts = []
+        first_span = None
+        for line in block.get("lines", []):
+            txt = "".join(s["text"] for s in line.get("spans", []))
+            if line.get("spans") and first_span is None:
+                first_span = line["spans"][0]
+            parts.append(txt)
+        text = "\n".join(parts).strip()
+        if not text or first_span is None:
+            continue
+        x0, y0, x1, y1 = block["bbox"]
+        fam, bold, italic = _span_family(first_span.get("font", ""),
+                                         first_span.get("flags", 0))
+        c = first_span.get("color", 0)
+        out.append({
+            "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0,
+            "origX": x0, "origY": y0, "origW": x1 - x0, "origH": y1 - y0,
+            "text": text,
+            "fontSize": round(first_span.get("size", 12), 1),
+            "fontFamily": fam, "bold": bold, "italic": italic,
+            "color": "#{:06x}".format(c if isinstance(c, int) else 0),
+        })
+    return _merge_text_blocks(out)
+
+
+def _insert_block_text(page: fitz.Page, block: dict, *, text: str | None = None,
+                       x: float | None = None, y: float | None = None,
+                       h: float | None = None):
+    """Insert one text block at the given (or block-default) position."""
+    bx = x if x is not None else block["x"]
+    by = y if y is not None else block["y"]
+    bw = block["w"]
+    bh = h if h is not None else block["h"]
+    content = text if text is not None else block["text"]
+    font = fontname(block["fontFamily"], block.get("bold"), block.get("italic"))
+    size = float(block["fontSize"])
+    color = hex2rgb(block.get("color", "#000000"))
+    rect = fitz.Rect(bx, by, bx + bw, by + bh)
+    _insert_textbox_fit(page, rect, content, font=font, size=size, color=color, align=0)
+
+
+def _redact_blocks(page: fitz.Page, blocks: list[dict]):
+    for b in blocks:
+        page.add_redact_annot(_block_rect(b), fill=False)
+    if not blocks:
+        return
+    try:
+        page.apply_redactions(
+            images=fitz.PDF_REDACT_IMAGE_NONE,
+            graphics=fitz.PDF_REDACT_LINE_ART_NONE,
+        )
+    except (TypeError, AttributeError):
+        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
+
+
+def _push_blocks_to_next_page(doc: fitz.Document, pno: int,
+                              overflow_blocks: list[dict]) -> int:
+    """Place overflow blocks at the top of the next page, then reflow existing
+    content below them. Blocks that still overflow cascade to the page after."""
+    if not overflow_blocks:
+        return pno
+
+    next_pno = pno + 1
+    if next_pno >= doc.page_count:
+        cur = doc[pno]
+        doc.insert_page(next_pno, width=cur.rect.width, height=cur.rect.height)
+
+    page = doc[next_pno]
+    page_h = page.rect.height
+    margin_top = 36.0
+    gap = 6.0
+
+    existing = _extract_page_text_blocks(page)
+    if existing:
+        _redact_blocks(page, existing)
+
+    y_cursor = margin_top
+    for b in overflow_blocks:
+        _insert_block_text(page, b, y=y_cursor, h=b["h"])
+        y_cursor += b["h"] + gap
+
+    cascade: list[dict] = []
+    for b in sorted(existing, key=lambda x: (x["y"], x["x"])):
+        if y_cursor + b["h"] > page_h - 10:
+            cascade.append(b)
+        else:
+            _insert_block_text(page, b, y=y_cursor)
+            y_cursor += b["h"] + gap
+
+    if cascade:
+        _push_blocks_to_next_page(doc, next_pno, cascade)
+
+    return next_pno
+
+
+def _apply_textedits_with_reflow(page: fitz.Page, doc: fitz.Document, pno: int,
+                                 edits: list[dict]):
+    """Rewrite text blocks and reflow everything below on overflow."""
+    page_blocks = _extract_page_text_blocks(page)
+    if not page_blocks:
+        for edit in edits:
+            page.add_redact_annot(_rect(edit), fill=False)
+        _redact_blocks(page, [])
+        for edit in edits:
+            rect = _rect(edit)
+            font = fontname(edit.get("fontFamily", "helv"), edit.get("bold"), edit.get("italic"))
+            size = float(edit.get("fontSize", 12))
+            color = hex2rgb(edit.get("color", "#000000"))
+            align = ALIGN.get(edit.get("align", "left"), 0)
+            _insert_textbox_fit(page, rect, edit.get("text", ""), font=font, size=size,
+                                color=color, align=align)
+        return
+
+    matched_indices: set[int] = set()
+    edit_plans: list[tuple[int, dict]] = []
+
+    for edit in edits:
+        # Match using original baseline bounds if provided by client
+        if "origX" in edit and "origY" in edit:
+            match_rect = fitz.Rect(
+                float(edit["origX"]),
+                float(edit["origY"]),
+                float(edit["origX"]) + float(edit.get("origW", 0)),
+                float(edit["origY"]) + float(edit.get("origH", 0))
+            )
+        else:
+            match_rect = _rect(edit)
+
+        best_idx = -1
+        best_ov = 0.0
+        for idx, b in enumerate(page_blocks):
+            if idx in matched_indices:
+                continue
+            bx = b.get("origX", b["x"])
+            by = b.get("origY", b["y"])
+            bw = b.get("origW", b["w"])
+            bh = b.get("origH", b["h"])
+            block_rect = fitz.Rect(bx, by, bx + bw, by + bh)
+            inter = match_rect & block_rect
+            ov = inter.get_area() if not inter.is_empty else 0.0
+            if ov > best_ov:
+                best_ov = ov
+                best_idx = idx
+        if best_idx < 0:
+            edit_plans.append((-1, edit))
+            continue
+        matched_indices.add(best_idx)
+        edit_plans.append((best_idx, edit))
+
+    # Process bottom-up so indices stay valid when slicing
+    for idx, edit in sorted(edit_plans, key=lambda t: t[0], reverse=True):
+        if idx < 0:
+            page.add_redact_annot(_rect(edit), fill=False)
+            continue
+
+        block = page_blocks[idx]
+        font = fontname(
+            edit.get("fontFamily", block["fontFamily"]),
+            edit.get("bold", block.get("bold")),
+            edit.get("italic", block.get("italic")),
+        )
+        size = float(edit.get("fontSize", block["fontSize"]))
+        text = edit.get("text", "")
+        color = hex2rgb(edit.get("color", block.get("color", "#000000")))
+        align = ALIGN.get(edit.get("align", "left"), 0)
+
+        old_h = block["h"]
+        # Use new edit position/size, falling back to original block bounds
+        bw = float(edit.get("w", block["w"]))
+        bx = float(edit.get("x", block["x"]))
+        by = float(edit.get("y", block["y"]))
+
+        new_h = _estimate_text_height(text, bw, font, size)
+        # Shift delta is based on new bottom coordinate versus original baseline bottom
+        delta = max(0.0, (by + new_h) - (block.get("origY", block["y"]) + block.get("origH", old_h)))
+        page_h = page.rect.height
+
+        below = page_blocks[idx + 1:]
+        to_redact = page_blocks[idx:]
+        _redact_blocks(page, to_redact)
+
+        # Re-insert edited block at its custom coordinates
+        edit_rect = fitz.Rect(bx, by, bx + bw, by + new_h)
+        _insert_textbox_fit(page, edit_rect, text, font=font, size=size, color=color, align=align)
+
+        on_page: list[dict] = []
+        overflow: list[dict] = []
+
+        for b in below:
+            new_y = b["y"] + delta
+            if new_y + b["h"] > page_h - 10:
+                overflow.append({**b, "y": new_y})
+            else:
+                on_page.append({**b, "y": new_y})
+
+        for b in on_page:
+            _insert_block_text(page, b, y=b["y"])
+
+        if overflow:
+            _push_blocks_to_next_page(doc, pno, overflow)
+
+        # Update local block list for subsequent edits on same page
+        updated_block = {
+            **block,
+            "x": bx, "y": by, "w": bw, "h": new_h, "text": text,
+            "origX": bx, "origY": by, "origW": bw, "origH": new_h
+        }
+        page_blocks = page_blocks[:idx] + [updated_block] + on_page
+
+    # Fallback edits that didn't match any block
+    unmatched = [edit for idx, edit in edit_plans if idx < 0]
+    if unmatched:
+        for edit in unmatched:
+            page.add_redact_annot(_rect(edit), fill=False)
+        _redact_blocks(page, [])
+        for edit in unmatched:
+            rect = _rect(edit)
+            font = fontname(edit.get("fontFamily", "helv"), edit.get("bold"), edit.get("italic"))
+            size = float(edit.get("fontSize", 12))
+            color = hex2rgb(edit.get("color", "#000000"))
+            align = ALIGN.get(edit.get("align", "left"), 0)
+            req_width = 0.0
+            txt = edit.get("text", "")
+            if txt:
+                for line in txt.split("\n"):
+                    try:
+                        w = fitz.get_text_length(line, fontname=font, fontsize=size)
+                        if w > req_width:
+                            req_width = w
+                    except Exception:
+                        pass
+            insert_rect = fitz.Rect(rect)
+            is_single_line = rect.height <= size * 2.0
+            if is_single_line and req_width > rect.width:
+                diff = req_width - rect.width + 4
+                if align == 0:
+                    insert_rect.x1 += diff
+                elif align == 2:
+                    insert_rect.x0 -= diff
+                elif align == 1:
+                    insert_rect.x0 -= diff / 2
+                    insert_rect.x1 += diff / 2
+                elif align == 3:
+                    insert_rect.x1 += diff
+            _insert_textbox_fit(page, insert_rect, txt, font=font, size=size,
+                                color=color, align=align)
+
+
 ALIGN = {"left": 0, "center": 1, "right": 2, "justify": 3}
 
 
@@ -257,55 +569,7 @@ def bake_annotations(path: Path, annotations: list[dict]):
         #    page background (colors, images) shows through untouched.
         edits = [a for a in items if a["type"] == "textedit"]
         if edits:
-            for a in edits:
-                page.add_redact_annot(_rect(a), fill=False)
-            try:
-                page.apply_redactions(
-                    images=fitz.PDF_REDACT_IMAGE_NONE,
-                    graphics=fitz.PDF_REDACT_LINE_ART_NONE,
-                )
-            except (TypeError, AttributeError):
-                # older PyMuPDF without the graphics parameter
-                page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-            for a in edits:
-                rect = _rect(a)
-                text = a.get("text", "")
-                font = fontname(a.get("fontFamily", "helv"), a.get("bold"), a.get("italic"))
-                size = float(a.get("fontSize", 12))
-                color = hex2rgb(a.get("color", "#000000"))
-                align = ALIGN.get(a.get("align", "left"), 0)
-
-                req_width = 0.0
-                if text:
-                    for line in text.split("\n"):
-                        try:
-                            w = fitz.get_text_length(line, fontname=font, fontsize=size)
-                            if w > req_width:
-                                req_width = w
-                        except Exception:
-                            pass
-
-                insert_rect = fitz.Rect(rect)
-                is_single_line = rect.height <= size * 2.0
-                if is_single_line and req_width > rect.width:
-                    diff = req_width - rect.width + 4  # +4 for slight padding
-                    if align == 0:  # left
-                        insert_rect.x1 += diff
-                    elif align == 2:  # right
-                        insert_rect.x0 -= diff
-                    elif align == 1:  # center
-                        insert_rect.x0 -= diff / 2
-                        insert_rect.x1 += diff / 2
-                    elif align == 3:  # justify (treat as left for expansion)
-                        insert_rect.x1 += diff
-
-                _insert_textbox_fit(
-                    page, insert_rect, text,
-                    font=font,
-                    size=size,
-                    color=color,
-                    align=align,
-                )
+            _apply_textedits_with_reflow(page, doc, pno, edits)
         # 2) everything else in creation order
         for a in items:
             fn = APPLIERS.get(a["type"])
@@ -516,6 +780,7 @@ def get_text_blocks(path: Path, pno: int) -> list[dict]:
             c = first_span.get("color", 0)
             out.append({
                 "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0,
+                "origX": x0, "origY": y0, "origW": x1 - x0, "origH": y1 - y0,
                 "text": text,
                 "fontSize": round(first_span.get("size", 12), 1),
                 "fontFamily": fam, "bold": bold, "italic": italic,

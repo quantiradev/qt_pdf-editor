@@ -104,13 +104,15 @@ function PagesTab() {
 
   return (
     <>
-      <div className="page-ops-bar">
-        <button className="icon-btn" title="Rotate left 90°" onClick={() => op.rotate(-90)}><RotateCcw size={15} /></button>
-        <button className="icon-btn" title="Rotate right 90°" onClick={() => op.rotate(90)}><RotateCw size={15} /></button>
-        <button className="icon-btn" title="Duplicate page(s)" onClick={op.duplicate}><Copy size={15} /></button>
-        <button className="icon-btn" title="Extract page(s) to a new PDF" onClick={op.extract}><FilePlus2 size={15} /></button>
-        <button className="icon-btn" title="Delete page(s)" onClick={op.remove}><Trash2 size={15} /></button>
-      </div>
+      {!s.previewMode && (
+        <div className="page-ops-bar">
+          <button className="icon-btn" title="Rotate left 90°" onClick={() => op.rotate(-90)}><RotateCcw size={15} /></button>
+          <button className="icon-btn" title="Rotate right 90°" onClick={() => op.rotate(90)}><RotateCw size={15} /></button>
+          <button className="icon-btn" title="Duplicate page(s)" onClick={op.duplicate}><Copy size={15} /></button>
+          <button className="icon-btn" title="Extract page(s) to a new PDF" onClick={op.extract}><FilePlus2 size={15} /></button>
+          <button className="icon-btn" title="Delete page(s)" onClick={op.remove}><Trash2 size={15} /></button>
+        </div>
+      )}
       <div className="side-body">
         {Array.from({ length: pages }, (_, pno) => (
           <div
@@ -121,24 +123,31 @@ function PagesTab() {
               s.currentPage === pno ? "current" : "",
               dragOver?.pno === pno ? (dragOver.after ? "drag-over-bottom" : "drag-over-top") : "",
             ].join(" ")}
-            draggable
+            draggable={!s.previewMode}
             onClick={(e) => clickThumb(pno, e)}
             onContextMenu={(e) => {
+              if (s.previewMode) return;
               e.preventDefault();
               if (!sel.includes(pno)) s.set({ selectedPages: [pno] });
               setMenu({ x: e.clientX, y: e.clientY });
             }}
             onDragStart={(e) => {
+              if (s.previewMode) return;
               dragFrom.current = pno;
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
+              if (s.previewMode) return;
               e.preventDefault();
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               setDragOver({ pno, after: e.clientY > rect.top + rect.height / 2 });
             }}
-            onDragLeave={() => setDragOver((d) => (d?.pno === pno ? null : d))}
+            onDragLeave={() => {
+              if (s.previewMode) return;
+              setDragOver((d) => (d?.pno === pno ? null : d));
+            }}
             onDrop={(e) => {
+              if (s.previewMode) return;
               e.preventDefault();
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               drop(pno, e.clientY > rect.top + rect.height / 2);

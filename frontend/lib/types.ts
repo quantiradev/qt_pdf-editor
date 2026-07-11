@@ -61,6 +61,10 @@ export interface TextEditAnnot extends Base, Rect {
   bold?: boolean;
   italic?: boolean;
   align?: "left" | "center" | "right";
+  origX?: number;
+  origY?: number;
+  origW?: number;
+  origH?: number;
 }
 
 export interface MarkupAnnot extends Base {
@@ -142,6 +146,10 @@ export interface TextBlock extends Rect {
   bold: boolean;
   italic: boolean;
   color: string;
+  origX?: number;
+  origY?: number;
+  origW?: number;
+  origH?: number;
 }
 
 export interface BakedNote {

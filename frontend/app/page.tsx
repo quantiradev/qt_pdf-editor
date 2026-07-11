@@ -69,7 +69,7 @@ export default function Home() {
         throw new Error(msg);
       }
       const meta = await res.json();
-      router.push(`/editor/${meta.id}`);
+      router.push(`/preview/${meta.id}`);
     } catch (err: any) {
       setUploadError(err.message || "Upload failed");
       setIsUploading(false);

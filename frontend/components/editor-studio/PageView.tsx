@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getPdfjs } from "@/lib/pdf";
 import { useEditor } from "@/lib/store";
-import type { Annot, LinkAnnot, Rect, TextBlock } from "@/lib/types";
+import type { Annot, Rect, TextBlock } from "@/lib/types";
 import { FONT_CSS, GRID_SIZE, SNAP_SIZE, snapTo, uid } from "@/lib/utils";
 import AnnotLayer from "./AnnotLayer";
 
@@ -97,7 +97,7 @@ export default function PageView({ pno }: { pno: number }) {
   }, [visible, s.doc, pno, zoom]);
 
   /* ---------- text layer (for markup selection) ---------- */
-  const wantsTextLayer = MARKUP_TOOLS.has(s.tool);
+  const wantsTextLayer = s.previewMode || MARKUP_TOOLS.has(s.tool);
   useEffect(() => {
     if (!visible || !s.doc || !textRef.current) return;
     let cancelled = false;
@@ -134,6 +134,7 @@ export default function PageView({ pno }: { pno: number }) {
 
   /* ---------- creation gestures ---------- */
   const onPointerDown = (e: React.PointerEvent) => {
+    if (s.previewMode) return;
     const st = useEditor.getState();
     const tool = st.tool;
     if (e.button !== 0) return;
@@ -235,6 +236,7 @@ export default function PageView({ pno }: { pno: number }) {
 
   /* ---------- markup from native text selection ---------- */
   const onMouseUpMarkup = () => {
+    if (s.previewMode) return;
     const st = useEditor.getState();
     if (!MARKUP_TOOLS.has(st.tool)) return;
     const sel = window.getSelection();
@@ -274,9 +276,9 @@ export default function PageView({ pno }: { pno: number }) {
 
   /* ---------- edit-text blocks ---------- */
   useEffect(() => {
-    if (s.tool === "edit-text" && visible) s.fetchTextBlocks(pno);
+    if (!s.previewMode && s.tool === "edit-text" && visible) s.fetchTextBlocks(pno);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.tool, visible, pno, s.meta?.version]);
+  }, [s.tool, visible, pno, s.meta?.version, s.previewMode]);
 
   const cursor =
     s.tool === "pen" ? "crosshair"
@@ -372,27 +374,101 @@ function TextBlocksOverlay({ pno, blocks, zoom }: {
   pno: number; blocks: TextBlock[]; zoom: number;
 }) {
   const s = useEditor();
+  const [selected, setSelected] = useState<number | null>(null);
   const [editing, setEditing] = useState<number | null>(null);
   const [value, setValue] = useState("");
+  const drag = useRef<{
+    index: number; mode: "move" | "resize";
+    handle?: string; startX: number; startY: number;
+    origX: number; origY: number; origW: number; origH: number;
+  } | null>(null);
 
-  // Commits straight into the PDF: the original glyphs are removed from the
-  // page content and the new text is inserted — no overlay remains.
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const d = drag.current;
+      if (!d) return;
+      const dx = (e.clientX - d.startX) / zoom;
+      const dy = (e.clientY - d.startY) / zoom;
+
+      if (d.mode === "move") {
+        s.updateTextBlock(pno, d.index, {
+          x: d.origX + dx,
+          y: d.origY + dy,
+        });
+      } else if (d.mode === "resize") {
+        let x = d.origX;
+        let y = d.origY;
+        let w = d.origW;
+        let h = d.origH;
+        const hd = d.handle!;
+
+        if (hd.includes("e")) w = Math.max(10, d.origW + dx);
+        if (hd.includes("s")) h = Math.max(10, d.origH + dy);
+        if (hd.includes("w")) {
+          const nx = d.origX + dx;
+          w = Math.max(10, d.origW + (d.origX - nx));
+          x = d.origX + d.origW - w;
+        }
+        if (hd.includes("n")) {
+          const ny = d.origY + dy;
+          h = Math.max(10, d.origH + (d.origY - ny));
+          y = d.origY + d.origH - h;
+        }
+
+        s.updateTextBlock(pno, d.index, { x, y, w, h });
+      }
+    };
+
+    const onUp = () => {
+      drag.current = null;
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [zoom, pno, s]);
+
+  // Click outside to deselect
+  useEffect(() => {
+    const handleOutsideClick = () => {
+      setSelected(null);
+    };
+    window.addEventListener("click", handleOutsideClick);
+    return () => {
+      window.removeEventListener("click", handleOutsideClick);
+    };
+  }, []);
+
   const commit = (block: TextBlock) => {
     setEditing(null);
+    setSelected(null);
     if (value === block.text) return;
     s.applyTextEdit({
       id: uid(), page: pno, type: "textedit",
       x: block.x - 1, y: block.y - 1, w: block.w + 2, h: block.h + 2,
+      origX: block.origX, origY: block.origY, origW: block.origW, origH: block.origH,
       text: value,
       fontSize: block.fontSize, fontFamily: block.fontFamily,
       color: block.color, bold: block.bold, italic: block.italic,
     });
   };
 
+  const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
+  const CURSORS: Record<string, string> = {
+    nw: "nwse-resize", n: "ns-resize", ne: "nesw-resize", e: "ew-resize",
+    se: "nwse-resize", s: "ns-resize", sw: "nesw-resize", w: "ew-resize",
+  };
+
   return (
     <div className="blocks-layer">
       {blocks.map((b, i) => {
-        if (editing === i) {
+        const isSelected = selected === i;
+        const isEditing = editing === i;
+
+        if (isEditing) {
           return (
             <textarea
               key={i} autoFocus
@@ -414,17 +490,75 @@ function TextBlocksOverlay({ pno, blocks, zoom }: {
                 if (e.key === "Escape") { e.stopPropagation(); setEditing(null); }
                 if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit(b);
               }}
+              onPointerDown={(e) => e.stopPropagation()}
             />
           );
         }
+
         return (
           <div
             key={i}
-            className="text-block-hit"
-            title="Click to edit this text"
-            style={{ left: b.x * zoom - 2, top: b.y * zoom - 2, width: b.w * zoom + 4, height: b.h * zoom + 4 }}
-            onClick={() => { setEditing(i); setValue(b.text); }}
-          />
+            style={{
+              position: "absolute",
+              left: b.x * zoom - 2,
+              top: b.y * zoom - 2,
+              width: b.w * zoom + 4,
+              height: b.h * zoom + 4,
+              zIndex: isSelected ? 10 : 1,
+            }}
+          >
+            <div
+              className={`text-block-hit ${isSelected ? "sel-outline" : ""}`}
+              title="Click to select, drag to move, double-click to edit text"
+              style={{
+                width: "100%",
+                height: "100%",
+                cursor: isSelected ? "move" : "text",
+                outline: isSelected ? "1.5px solid var(--accent)" : undefined,
+                outlineOffset: isSelected ? "1px" : undefined,
+              }}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                setSelected(i);
+                drag.current = {
+                  index: i, mode: "move",
+                  startX: e.clientX, startY: e.clientY,
+                  origX: b.x, origY: b.y, origW: b.w, origH: b.h
+                };
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setEditing(i);
+                setValue(b.text);
+              }}
+            />
+            {isSelected && HANDLES.map((h) => {
+              const cx = h.includes("w") ? 0 : h.includes("e") ? b.w * zoom + 4 : (b.w * zoom + 4) / 2;
+              const cy = h.includes("n") ? 0 : h.includes("s") ? b.h * zoom + 4 : (b.h * zoom + 4) / 2;
+              return (
+                <div
+                  key={h}
+                  className="handle"
+                  style={{
+                    position: "absolute",
+                    left: cx - 5, top: cy - 5,
+                    cursor: CURSORS[h],
+                    zIndex: 20,
+                    pointerEvents: "auto",
+                  }}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    drag.current = {
+                      index: i, mode: "resize", handle: h,
+                      startX: e.clientX, startY: e.clientY,
+                      origX: b.x, origY: b.y, origW: b.w, origH: b.h
+                    };
+                  }}
+                />
+              );
+            })}
+          </div>
         );
       })}
     </div>
