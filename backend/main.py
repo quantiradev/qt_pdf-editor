@@ -17,10 +17,11 @@ app = FastAPI(title="PDF Studio API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "app://localhost"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -231,7 +232,7 @@ def rename(file_id: str, body: RenameBody):
     return storage.public(storage.update(file_id, name=_safe_name(body.name)))
 
 
-@app.get("/api/files/{file_id}/content")
+@app.api_route("/api/files/{file_id}/content", methods=["GET", "HEAD"])
 def content(file_id: str, v: int | None = None):
     _meta_or_404(file_id)
     data = storage.path_for(file_id).read_bytes()
@@ -273,10 +274,10 @@ def outline(file_id: str):
     return pdf_ops.get_outline(storage.path_for(file_id))
 
 
-@app.get("/api/files/{file_id}/text")
-def text_blocks(file_id: str, page: int = 0):
+@app.get("/api/files/{file_id}/paragraphs")
+def paragraphs(file_id: str, page: int = 0):
     _meta_or_404(file_id)
-    return pdf_ops.get_text_blocks(storage.path_for(file_id), page)
+    return pdf_ops.get_paragraphs(storage.path_for(file_id), page)
 
 
 @app.get("/api/files/{file_id}/notes")
@@ -292,19 +293,21 @@ class NoteBody(BaseModel):
 @app.patch("/api/files/{file_id}/notes/{xref}")
 def edit_note(file_id: str, xref: int, body: NoteBody):
     _meta_or_404(file_id)
-    storage.snapshot_before_change(file_id)
-    if not pdf_ops.update_note(storage.path_for(file_id), xref, body.text):
-        raise HTTPException(404, "Note not found")
-    return storage.public(storage.update(file_id, bump_version=True))
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        if not pdf_ops.update_note(storage.path_for(file_id), xref, body.text):
+            raise HTTPException(404, "Note not found")
+        return storage.public(storage.update(file_id, bump_version=True))
 
 
 @app.delete("/api/files/{file_id}/notes/{xref}")
 def remove_note(file_id: str, xref: int):
     _meta_or_404(file_id)
-    storage.snapshot_before_change(file_id)
-    if not pdf_ops.delete_note(storage.path_for(file_id), xref):
-        raise HTTPException(404, "Note not found")
-    return storage.public(storage.update(file_id, bump_version=True))
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        if not pdf_ops.delete_note(storage.path_for(file_id), xref):
+            raise HTTPException(404, "Note not found")
+        return storage.public(storage.update(file_id, bump_version=True))
 
 
 # ------------------------------------------------------------ save edits
@@ -318,35 +321,44 @@ def save_annotations(file_id: str, body: AnnotationsBody):
     _meta_or_404(file_id)
     if not body.annotations:
         raise HTTPException(400, "No edits supplied")
-    storage.snapshot_before_change(file_id)
-    try:
-        pdf_ops.bake_annotations(storage.path_for(file_id), body.annotations)
-    except Exception as exc:
-        raise HTTPException(422, f"Could not apply edits: {exc}")
-    meta = storage.update(file_id, bump_version=True,
-                          pages=pdf_ops.page_count(
-                              storage.path_for(file_id).read_bytes()))
-    return storage.public(meta)
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        try:
+            warnings, changed_pages = pdf_ops.bake_annotations(
+                storage.path_for(file_id), body.annotations)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc))
+        except Exception as exc:
+            raise HTTPException(422, f"Could not apply edits: {exc}")
+        meta = storage.update(file_id, bump_version=True,
+                              pages=pdf_ops.page_count(
+                                  storage.path_for(file_id).read_bytes()))
+    out = storage.public(meta)
+    out["warnings"] = warnings
+    out["changed_pages"] = changed_pages
+    return out
 
 
 @app.post("/api/files/{file_id}/undo")
 def undo(file_id: str):
     _meta_or_404(file_id)
-    meta = storage.undo(file_id)
-    if meta is None:
-        raise HTTPException(409, "Nothing to undo")
-    pages = pdf_ops.page_count(storage.path_for(file_id).read_bytes())
-    return storage.public(storage.update(file_id, pages=pages))
+    with storage.op_lock(file_id):
+        meta = storage.undo(file_id)
+        if meta is None:
+            raise HTTPException(409, "Nothing to undo")
+        pages = pdf_ops.page_count(storage.path_for(file_id).read_bytes())
+        return storage.public(storage.update(file_id, pages=pages))
 
 
 @app.post("/api/files/{file_id}/redo")
 def redo(file_id: str):
     _meta_or_404(file_id)
-    meta = storage.redo(file_id)
-    if meta is None:
-        raise HTTPException(409, "Nothing to redo")
-    pages = pdf_ops.page_count(storage.path_for(file_id).read_bytes())
-    return storage.public(storage.update(file_id, pages=pages))
+    with storage.op_lock(file_id):
+        meta = storage.redo(file_id)
+        if meta is None:
+            raise HTTPException(409, "Nothing to redo")
+        pages = pdf_ops.page_count(storage.path_for(file_id).read_bytes())
+        return storage.public(storage.update(file_id, pages=pages))
 
 
 class WatermarkBody(BaseModel):
@@ -365,12 +377,13 @@ def watermark(file_id: str, body: WatermarkBody):
         pages = pdf_ops.parse_ranges(body.pages, meta["pages"])
     except Exception as exc:
         raise HTTPException(400, f"Bad page range: {exc}")
-    storage.snapshot_before_change(file_id)
-    pdf_ops.add_watermark(
-        storage.path_for(file_id), text=body.text, color=body.color,
-        opacity=max(0.02, min(1.0, body.opacity)),
-        font_size=body.fontSize, rotate=body.rotate, pages=pages)
-    return storage.public(storage.update(file_id, bump_version=True))
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        pdf_ops.add_watermark(
+            storage.path_for(file_id), text=body.text, color=body.color,
+            opacity=max(0.02, min(1.0, body.opacity)),
+            font_size=body.fontSize, rotate=body.rotate, pages=pages)
+        return storage.public(storage.update(file_id, bump_version=True))
 
 
 # ------------------------------------------------------------ page operations
@@ -403,39 +416,43 @@ def rotate(file_id: str, body: RotateBody):
     _meta_or_404(file_id)
     if body.degrees % 90 != 0:
         raise HTTPException(400, "Rotation must be a multiple of 90")
-    storage.snapshot_before_change(file_id)
-    pdf_ops.rotate_pages(storage.path_for(file_id), body.pages, body.degrees)
-    return _bumped(file_id)
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        pdf_ops.rotate_pages(storage.path_for(file_id), body.pages, body.degrees)
+        return _bumped(file_id)
 
 
 @app.post("/api/files/{file_id}/pages/delete")
 def remove_pages(file_id: str, body: PagesBody):
     _meta_or_404(file_id)
-    storage.snapshot_before_change(file_id)
-    try:
-        pdf_ops.delete_pages(storage.path_for(file_id), body.pages)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return _bumped(file_id)
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        try:
+            pdf_ops.delete_pages(storage.path_for(file_id), body.pages)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return _bumped(file_id)
 
 
 @app.post("/api/files/{file_id}/pages/duplicate")
 def duplicate(file_id: str, body: PagesBody):
     _meta_or_404(file_id)
-    storage.snapshot_before_change(file_id)
-    pdf_ops.duplicate_pages(storage.path_for(file_id), body.pages)
-    return _bumped(file_id)
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        pdf_ops.duplicate_pages(storage.path_for(file_id), body.pages)
+        return _bumped(file_id)
 
 
 @app.post("/api/files/{file_id}/pages/reorder")
 def reorder(file_id: str, body: OrderBody):
     _meta_or_404(file_id)
-    storage.snapshot_before_change(file_id)
-    try:
-        pdf_ops.reorder_pages(storage.path_for(file_id), body.order)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc))
-    return _bumped(file_id)
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        try:
+            pdf_ops.reorder_pages(storage.path_for(file_id), body.order)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        return _bumped(file_id)
 
 
 @app.post("/api/files/{file_id}/pages/extract")
@@ -519,3 +536,10 @@ def export(file_id: str, format: str = "pdf", pages: str = "all", dpi: int = 150
     data = pdf_ops.zip_bytes(entries)
     return Response(data, media_type="application/zip", headers={
         "Content-Disposition": f'attachment; filename="{stem} ({fmt} export).zip"'})
+
+
+if __name__ == '__main__':
+    import uvicorn
+    import sys
+    port = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[1] == '--port' else 8000
+    uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")

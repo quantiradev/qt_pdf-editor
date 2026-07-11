@@ -1,9 +1,17 @@
 "use client";
 import { StickyNote } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { useEditor } from "@/lib/store";
-import type { Annot } from "@/lib/types";
-import { FONT_CSS, SNAP_SIZE, clamp, inkBBox, pointsToPath, snapTo } from "@/lib/utils";
+import { isPristineBlock, useEditor } from "@/lib/store";
+import type { Annot, TextBlockAnnot } from "@/lib/types";
+import { FONT_CSS, SNAP_SIZE, clamp, inkBBox, pointsToPath, snapTo, uid } from "@/lib/utils";
+
+type DragMode = "move" | "resize" | "endpoint" | "rotate";
+
+/** Effectively unrotated — page-bound clamping only applies then. */
+function isUpright(deg: number): boolean {
+  const d = ((deg % 360) + 360) % 360;
+  return d < 0.05 || d > 359.95;
+}
 
 /** Renders all pending annotations for one page + selection/drag/resize UX. */
 export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
@@ -12,8 +20,9 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
   const s = useEditor();
   const annots = s.annots.filter((a) => a.page === pno);
   const drag = useRef<{
-    id: string; mode: "move" | "resize" | "endpoint";
+    id: string; mode: DragMode;
     handle?: string; startX: number; startY: number; orig: any;
+    pageLeft: number; pageTop: number;
   } | null>(null);
 
   /* window-level move/up so drags survive fast pointer movement */
@@ -38,6 +47,13 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
             x1: d.orig.x1 + dx, y1: d.orig.y1 + dy,
             x2: d.orig.x2 + dx, y2: d.orig.y2 + dy,
           } as any);
+        } else if (a.type === "textblock" && isUpright(a.rotate)) {
+          // baked text past the page edge is clipped away — keep upright
+          // blocks fully on the page (rotated ones get the loose clamp)
+          st.updateAnnot(a.id, {
+            x: clamp(sn(d.orig.x + dx), 2, Math.max(2, pageW - a.w - 2)),
+            y: clamp(sn(d.orig.y + dy), 2, Math.max(2, pageH - a.h - 2)),
+          } as any);
         } else {
           st.updateAnnot(a.id, {
             x: clamp(sn(d.orig.x + dx), -a.w * 0.5, pageW - a.w * 0.5),
@@ -49,6 +65,56 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
         if (d.handle === "p1") { patch.x1 = sn(d.orig.x1 + dx); patch.y1 = sn(d.orig.y1 + dy); }
         else { patch.x2 = sn(d.orig.x2 + dx); patch.y2 = sn(d.orig.y2 + dy); }
         st.updateAnnot(a.id, patch);
+      } else if (d.mode === "rotate") {
+        // angle of the pointer about the block centre, relative to grab
+        const cx = d.orig.x + d.orig.w / 2;
+        const cy = d.orig.y + (d.orig.h ?? 0) / 2;
+        const px = (e.clientX - d.pageLeft) / zoom;
+        const py = (e.clientY - d.pageTop) / zoom;
+        const sx = (d.startX - d.pageLeft) / zoom;
+        const sy = (d.startY - d.pageTop) / zoom;
+        const a1 = Math.atan2(py - cy, px - cx);
+        const a0 = Math.atan2(sy - cy, sx - cx);
+        let deg = (d.orig.rotate ?? 0) + ((a1 - a0) * 180) / Math.PI;
+        deg = ((((deg + 180) % 360) + 360) % 360) - 180; // (-180, 180]
+        if (e.shiftKey) {
+          deg = Math.round(deg / 15) * 15;
+        } else {
+          for (const stop of [-180, -90, 0, 90, 180]) {
+            if (Math.abs(deg - stop) < 3) { deg = stop === -180 ? 180 : stop; break; }
+          }
+        }
+        st.updateAnnot(a.id, { rotate: deg } as any);
+      } else if (d.mode === "resize" && a.type === "textblock") {
+        // width-only resize along the block's own (rotated) x-axis; the
+        // opposite edge stays put and the text re-wraps live to the new
+        // width — height follows the content, never the pointer
+        const th = ((d.orig.rotate ?? 0) * Math.PI) / 180;
+        const cos = Math.cos(th), sin = Math.sin(th);
+        const ldx = dx * cos + dy * sin;
+        const hd = d.handle!;
+        const upright = isUpright(d.orig.rotate ?? 0);
+        if (hd.includes("e")) {
+          let w = Math.max(30, d.orig.w + ldx);
+          // an upright block must not grow past the page edge — baked
+          // text out there is clipped away
+          if (upright) w = Math.min(w, Math.max(30, pageW - d.orig.x - 2));
+          const eff = w - d.orig.w;
+          st.updateAnnot(a.id, {
+            w,
+            x: d.orig.x - eff / 2 + (eff / 2) * cos,
+            y: d.orig.y + (eff / 2) * sin,
+          } as any);
+        } else if (hd.includes("w")) {
+          let w = Math.max(30, d.orig.w - ldx);
+          if (upright) w = Math.min(w, Math.max(30, d.orig.x + d.orig.w - 2));
+          const eff = d.orig.w - w;
+          st.updateAnnot(a.id, {
+            w,
+            x: d.orig.x + eff / 2 + (eff / 2) * cos,
+            y: d.orig.y + (eff / 2) * sin,
+          } as any);
+        }
       } else if (d.mode === "resize") {
         let { x, y, w, h } = d.orig;
         const hd = d.handle!;
@@ -82,12 +148,15 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
   }, [zoom, pageW, pageH]);
 
   const startDrag = (
-    e: React.PointerEvent, a: Annot,
-    mode: "move" | "resize" | "endpoint", handle?: string
+    e: React.PointerEvent, a: Annot, mode: DragMode, handle?: string
   ) => {
-    if (useEditor.getState().tool !== "select") return;
+    const tool = useEditor.getState().tool;
+    // block objects are draggable from both the select and edit-text tools
+    if (tool !== "select" && !(tool === "edit-text" && a.type === "textblock")) return;
     e.stopPropagation();
     e.preventDefault();
+    const wrap = (e.target as HTMLElement).closest(".page-wrap");
+    const r = wrap?.getBoundingClientRect();
     const st = useEditor.getState();
     st.set({ selectedId: a.id });
     st.snapshot();
@@ -96,13 +165,40 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
       id: a.id, mode, handle,
       startX: e.clientX, startY: e.clientY,
       orig: JSON.parse(JSON.stringify(a)),
+      pageLeft: r?.left ?? 0, pageTop: r?.top ?? 0,
     };
   };
 
   const selectable = !s.previewMode && s.tool === "select";
+  const editableText = !s.previewMode && s.tool === "edit-text";
+
+  useEffect(() => {
+    if (editableText) {
+      s.fetchParagraphs(pno);
+    }
+  }, [editableText, pno, s]);
+
+  const rawParagraphs = s.paragraphs[pno];
+  const paragraphs = Array.isArray(rawParagraphs) ? rawParagraphs : [];
+  // paragraphs already lifted into a live block session keep their overlay hidden
+  const liveParaIds = new Set(
+    annots.filter((a): a is TextBlockAnnot => a.type === "textblock")
+      .map((a) => a.paraId));
 
   return (
     <div className="annot-layer">
+      {/* masks: a floating block leaves a blank where its paragraph was */}
+      {annots.map((a) =>
+        a.type === "textblock" && (s.editingId === a.id || !isPristineBlock(a)) ? (
+          <div
+            key={`mask-${a.id}`} className="tb-mask"
+            style={{
+              left: (a.orig.x - 1.5) * zoom, top: (a.orig.y - 1) * zoom,
+              width: (a.orig.w + 3) * zoom, height: (a.orig.h + 2) * zoom,
+            }}
+          />
+        ) : null)}
+
       {/* SVG sub-layer: ink + shapes + lines */}
       <svg
         viewBox={`0 0 ${pageW} ${pageH}`} preserveAspectRatio="none"
@@ -176,11 +272,42 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
         })}
       </svg>
 
-      {/* HTML sub-layer: markup rects, text, images, notes, links */}
+      {/* HTML sub-layer: markup rects, text, blocks, images, notes, links */}
       {annots.map((a) => <HtmlAnnot key={a.id} a={a} zoom={zoom} startDrag={startDrag} />)}
 
+      {/* Block outlines for the edit-text tool: click one to pick it up */}
+      {editableText && paragraphs.map((p) => {
+        if (liveParaIds.has(p.id)) return null;
+        return (
+          <div
+            key={p.id}
+            className="text-block-hit hit"
+            style={{
+              left: (p.x - 2) * zoom, top: (p.y - 2) * zoom,
+              width: (p.w + 4) * zoom, height: (p.h + 4) * zoom,
+            }}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              const st = useEditor.getState();
+              if (st.tool !== "edit-text") return;
+              const block: TextBlockAnnot = {
+                id: uid(), page: pno, type: "textblock", paraId: p.id,
+                x: p.x, y: p.y, w: p.w, h: p.h, rotate: 0,
+                text: p.text, fontFamily: p.fontFamily, fontSize: p.fontSize,
+                color: p.color, bold: p.bold, italic: p.italic, align: p.align,
+                leading: p.leading,
+                orig: { x: p.x, y: p.y, w: p.w, h: p.h },
+                origText: p.text,
+              };
+              st.beginBlockEdit(block);
+              startDrag(e, block, "move"); // click-and-drag in one gesture
+            }}
+          />
+        );
+      })}
+
       {/* selection adornments */}
-      {selectable && s.selectedId && (
+      {(selectable || editableText) && s.selectedId && (
         <Selection
           a={annots.find((x) => x.id === s.selectedId)}
           zoom={zoom} startDrag={startDrag}
@@ -194,10 +321,10 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
 
 function HtmlAnnot({ a, zoom, startDrag }: {
   a: Annot; zoom: number;
-  startDrag: (e: React.PointerEvent, a: Annot, m: "move" | "resize" | "endpoint", h?: string) => void;
+  startDrag: (e: React.PointerEvent, a: Annot, m: DragMode, h?: string) => void;
 }) {
   const s = useEditor();
-  const selectable = s.tool === "select";
+  const selectable = !s.previewMode && s.tool === "select";
   const editing = s.editingId === a.id;
 
   if (a.type === "highlight" || a.type === "underline" || a.type === "strikeout") {
@@ -238,7 +365,11 @@ function HtmlAnnot({ a, zoom, startDrag }: {
     );
   }
 
-  if (a.type === "text" || a.type === "textedit") {
+  if (a.type === "textblock") {
+    return <TextBlockView a={a} zoom={zoom} startDrag={startDrag} />;
+  }
+
+  if (a.type === "text") {
     const base: React.CSSProperties = {
       left: a.x * zoom, top: a.y * zoom,
       width: a.w * zoom, minHeight: a.h * zoom,
@@ -252,9 +383,7 @@ function HtmlAnnot({ a, zoom, startDrag }: {
       pointerEvents: selectable ? "auto" : "none",
     };
     if (editing) {
-      return (
-        <TextEditorOverlay a={a} style={base} zoom={zoom} />
-      );
+      return <TextEditorOverlay a={a} style={base} />;
     }
     return (
       <div
@@ -305,22 +434,12 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         className={`annot-item hit ${s.selectedId === a.id ? "sel-outline" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom,
-          pointerEvents: "auto",
-          cursor: selectable ? "move" : "pointer",
+          pointerEvents: selectable ? "auto" : "none",
+          cursor: selectable ? "move" : undefined,
         }}
-        onPointerDown={(e) => {
-          if (selectable) {
-            startDrag(e, a, "move");
-          } else {
-            e.stopPropagation();
-          }
-        }}
-        onDoubleClick={() => {
-          if (selectable) {
-            s.set({ rightOpen: true, rightTab: "comments", selectedId: a.id });
-          }
-        }}
-        title={a.text || "Sticky note"}
+        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
+        onDoubleClick={() => s.set({ rightOpen: true, rightTab: "comments", selectedId: a.id })}
+        title={a.text || "Sticky note — double-click to write the comment"}
       >
         <div className="note-pin" style={{ background: a.color, transform: `scale(${Math.max(0.7, zoom)})`, transformOrigin: "top left" }}>
           <StickyNote size={15} />
@@ -335,17 +454,10 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         className={`annot-item hit link-box ${s.selectedId === a.id ? "sel-outline" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom, width: a.w * zoom, height: a.h * zoom,
-          pointerEvents: "auto",
-          cursor: selectable ? "move" : "pointer",
+          pointerEvents: selectable ? "auto" : "none",
+          cursor: selectable ? "move" : undefined,
         }}
-        onPointerDown={(e) => {
-          if (selectable) {
-            startDrag(e, a, "move");
-          } else {
-            e.stopPropagation();
-            window.open(a.url, "_blank", "noopener,noreferrer");
-          }
-        }}
+        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
       >
         {s.selectedId === a.id && <span className="link-chip">{a.url}</span>}
       </div>
@@ -354,11 +466,132 @@ function HtmlAnnot({ a, zoom, startDrag }: {
   return null;
 }
 
+/* ------------------------------------------------ live text block */
+
+/**
+ * One paragraph lifted off the page: rendered in HTML with the same box,
+ * font metrics and line-height the server will use to bake it, so the text
+ * re-wraps live while moving/resizing/rotating. Double-click for a caret.
+ */
+function TextBlockView({ a, zoom, startDrag }: {
+  a: TextBlockAnnot; zoom: number;
+  startDrag: (e: React.PointerEvent, a: Annot, m: DragMode, h?: string) => void;
+}) {
+  const s = useEditor();
+  const editing = s.editingId === a.id;
+  const selected = s.selectedId === a.id;
+  const active = s.tool === "select" || s.tool === "edit-text";
+  const innerRef = useRef<HTMLDivElement>(null);
+  const editStartText = useRef(a.text);
+
+  // the box height always hugs the wrapped content (width drives reflow)
+  useEffect(() => {
+    const el = innerRef.current;
+    if (!el) return;
+    const h = el.scrollHeight / zoom;
+    if (h > 4 && Math.abs(h - a.h) > 0.75) {
+      useEditor.getState().updateAnnot(a.id, { h } as any);
+    }
+  }, [a.id, a.text, a.w, a.h, a.fontSize, a.leading, zoom, editing]);
+
+  // entering edit mode: seed the contenteditable once, focus, caret at end
+  useEffect(() => {
+    if (!editing || !innerRef.current) return;
+    const el = innerRef.current;
+    editStartText.current = a.text;
+    el.textContent = editStartText.current;
+    el.focus();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(false);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, a.id]);
+
+  const stopEditing = (revert: boolean) => {
+    const st = useEditor.getState();
+    if (revert) st.updateAnnot(a.id, { text: editStartText.current } as any);
+    if (st.editingId === a.id) st.set({ editingId: null });
+  };
+
+  return (
+    <div
+      className={`annot-item tb-live ${active && !editing ? "hit" : ""}`}
+      style={{
+        left: a.x * zoom, top: a.y * zoom,
+        width: a.w * zoom, height: a.h * zoom,
+        transform: `rotate(${a.rotate}deg)`,
+        pointerEvents: active ? "auto" : "none",
+        cursor: editing ? "text" : "move",
+      }}
+      onPointerDown={(e) => {
+        if (editing) { e.stopPropagation(); return; }
+        startDrag(e, a, "move");
+      }}
+      onDoubleClick={(e) => {
+        e.stopPropagation();
+        useEditor.getState().set({ editingId: a.id, selectedId: a.id });
+      }}
+      title={editing ? undefined : "Drag to move · double-click to edit the text"}
+    >
+      <div
+        key={editing ? "edit" : "view"}
+        ref={innerRef}
+        className="tb-text"
+        contentEditable={editing}
+        suppressContentEditableWarning
+        spellCheck={false}
+        style={{
+          fontSize: a.fontSize * zoom,
+          fontFamily: FONT_CSS[a.fontFamily],
+          fontWeight: a.bold ? 700 : 400,
+          fontStyle: a.italic ? "italic" : "normal",
+          textAlign: a.align,
+          color: a.color,
+          lineHeight: `${a.leading / a.fontSize}`,
+          whiteSpace: "pre-wrap",
+          overflowWrap: "break-word",
+          minHeight: a.fontSize * zoom,
+          userSelect: editing ? "text" : "none",
+          cursor: editing ? "text" : "inherit",
+          opacity: (!editing && isPristineBlock(a)) ? 0 : 1,
+        }}
+        onInput={(e) => {
+          if (!editing) return;
+          useEditor.getState().updateAnnot(
+            a.id, { text: (e.target as HTMLElement).innerText } as any);
+        }}
+        onPaste={(e) => {
+          if (!editing) return;
+          e.preventDefault();
+          document.execCommand(
+            "insertText", false, e.clipboardData.getData("text/plain"));
+        }}
+        onKeyDown={(e) => {
+          if (!editing) return;
+          e.stopPropagation();
+          if (e.key === "Escape") { e.preventDefault(); stopEditing(true); }
+          // blocks are single paragraphs — the engine joins lines with spaces
+          if (e.key === "Enter") e.preventDefault();
+        }}
+        onBlur={() => editing && stopEditing(false)}
+      >
+        {editing ? undefined : a.text}
+      </div>
+      {selected && !editing && !isPristineBlock(a) && (
+        <span className="tb-badge">edited — will bake on save</span>
+      )}
+    </div>
+  );
+}
+
 /* ------------------------------------------------ inline text editing */
 
-function TextEditorOverlay({ a, style, zoom }: {
-  a: Extract<Annot, { type: "text" | "textedit" }>;
-  style: React.CSSProperties; zoom: number;
+function TextEditorOverlay({ a, style }: {
+  a: Extract<Annot, { type: "text" }>;
+  style: React.CSSProperties;
 }) {
   const s = useEditor();
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -370,7 +603,7 @@ function TextEditorOverlay({ a, style, zoom }: {
 
   const commit = () => {
     const v = ref.current?.value ?? "";
-    if (!v.trim() && a.type === "text") {
+    if (!v.trim()) {
       s.removeAnnot(a.id);
     } else {
       const lines = v.split("\n").length;
@@ -414,9 +647,13 @@ const CURSORS: Record<string, string> = {
 
 function Selection({ a, zoom, startDrag }: {
   a: Annot | undefined; zoom: number;
-  startDrag: (e: React.PointerEvent, a: Annot, m: "move" | "resize" | "endpoint", h?: string) => void;
+  startDrag: (e: React.PointerEvent, a: Annot, m: DragMode, h?: string) => void;
 }) {
   if (!a) return null;
+
+  if (a.type === "textblock") {
+    return <BlockSelection a={a} zoom={zoom} startDrag={startDrag} />;
+  }
 
   if (a.type === "line" || a.type === "arrow") {
     return (
@@ -476,5 +713,48 @@ function Selection({ a, zoom, startDrag }: {
         );
       })}
     </>
+  );
+}
+
+/** Rotated chrome for a text block: outline, width handles, rotate knob. */
+function BlockSelection({ a, zoom, startDrag }: {
+  a: TextBlockAnnot; zoom: number;
+  startDrag: (e: React.PointerEvent, a: Annot, m: DragMode, h?: string) => void;
+}) {
+  const W = a.w * zoom, H = a.h * zoom;
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: a.x * zoom, top: a.y * zoom, width: W, height: H,
+        transform: `rotate(${a.rotate}deg)`,
+        pointerEvents: "none", zIndex: 999,
+      }}
+    >
+      <div style={{
+        position: "absolute", inset: -2,
+        outline: "1.5px solid var(--accent)", borderRadius: 2,
+      }} />
+      {/* rotate knob above the top edge, like the reference tool */}
+      <div className="rot-stem" style={{ left: W / 2 - 0.75, top: -24, height: 22 }} />
+      <div
+        className="handle rot"
+        title="Drag to rotate — Shift snaps to 15°"
+        style={{ left: W / 2 - 5.5, top: -33 }}
+        onPointerDown={(e) => startDrag(e, a, "rotate")}
+      />
+      {(["nw", "ne", "e", "se", "sw", "w"] as const).map((h) => {
+        const cx = h.includes("w") ? 0 : h.includes("e") ? W : W / 2;
+        const cy = h.includes("n") ? 0 : h.includes("s") ? H : H / 2;
+        return (
+          <div
+            key={h} className="handle"
+            title="Drag to change the width — the text re-wraps"
+            style={{ left: cx - 4.5, top: cy - 4.5, cursor: "ew-resize" }}
+            onPointerDown={(e) => startDrag(e, a, "resize", h)}
+          />
+        );
+      })}
+    </div>
   );
 }

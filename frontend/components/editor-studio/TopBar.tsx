@@ -97,6 +97,7 @@ export default function TopBar() {
           </div>
         )}
       </div>
+      <div className="divider-v" />
 
       <button className="btn" onClick={() => s.set({ modal: "export" })}>
         <FileOutput size={15} /> Export

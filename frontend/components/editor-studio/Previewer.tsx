@@ -13,6 +13,9 @@ export default function Previewer({ id }: { id: string }) {
 
   useEffect(() => {
     s.set({ previewMode: true, rightOpen: false, tool: "select" });
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      s.set({ leftOpen: false });
+    }
     s.loadFile(id);
     (window as unknown as Record<string, unknown>).__pdfstore = useEditor;
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -53,7 +53,7 @@ function PropsTab() {
 
 function label(t: string) {
   return {
-    text: "Text box", textedit: "Text edit", highlight: "Highlight",
+    text: "Text box", textblock: "Text block", highlight: "Highlight",
     underline: "Underline", strikeout: "Strike-through", ink: "Pen stroke",
     rect: "Rectangle", ellipse: "Ellipse", line: "Line", arrow: "Arrow",
     image: "Image", note: "Sticky note", link: "Hyperlink",
@@ -128,7 +128,6 @@ function TypeProps({ a }: { a: Annot }) {
 
   switch (a.type) {
     case "text":
-    case "textedit":
       return (
         <div className="props-group">
           <h4>Typography</h4>
@@ -171,13 +170,11 @@ function TypeProps({ a }: { a: Annot }) {
             <span>Color</span>
             <Swatches colors={TEXT_COLORS} value={a.color} onPick={(c) => up({ color: c })} />
           </div>
-          {a.type === "text" && (
-            <div className="prop-row">
-              <span>Link URL</span>
-              <input className="input" placeholder="https:// (optional)" value={a.url ?? ""}
-                onChange={(e) => up({ url: e.target.value || undefined }, false)} />
-            </div>
-          )}
+          <div className="prop-row">
+            <span>Link URL</span>
+            <input className="input" placeholder="https:// (optional)" value={a.url ?? ""}
+              onChange={(e) => up({ url: e.target.value || undefined }, false)} />
+          </div>
         </div>
       );
 
@@ -299,6 +296,31 @@ function TypeProps({ a }: { a: Annot }) {
             <input className="input" value={a.url}
               onChange={(e) => up({ url: e.target.value }, false)} />
           </div>
+        </div>
+      );
+
+    case "textblock":
+      return (
+        <div className="props-group">
+          <h4>Text block</h4>
+          <div className="prop-row">
+            <span>Rotation</span>
+            <input
+              className="input" type="number" step={1} min={-180} max={180}
+              style={{ width: 70 }}
+              value={Math.round(a.rotate * 10) / 10}
+              onChange={(e) => up({
+                rotate: Math.max(-180, Math.min(180, Number(e.target.value) || 0)),
+              })}
+            />
+            <span>°</span>
+          </div>
+          <p className="side-hint">
+            Existing page text, lifted off the page. Drag it anywhere, pull the
+            side handles to re-wrap it, double-click to retype. Fonts and
+            colors of the original text are preserved when it is baked back
+            into the PDF. Deleting this object cancels the change.
+          </p>
         </div>
       );
 

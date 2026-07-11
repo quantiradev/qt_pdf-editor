@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getPdfjs } from "@/lib/pdf";
 import { useEditor } from "@/lib/store";
-import type { Annot, Rect, TextBlock } from "@/lib/types";
+import type { Annot, Paragraph, Rect } from "@/lib/types";
 import { FONT_CSS, GRID_SIZE, SNAP_SIZE, snapTo, uid } from "@/lib/utils";
 import AnnotLayer from "./AnnotLayer";
 
@@ -30,6 +30,7 @@ export default function PageView({ pno }: { pno: number }) {
 
   const size = s.pageSizes[pno] ?? { w: 612, h: 792 };
   const zoom = s.zoom;
+  const epoch = s.pageEpochs[pno] ?? 0; // bumps only when this page's content changed
   const W = size.w * zoom;
   const H = size.h * zoom;
 
@@ -57,14 +58,15 @@ export default function PageView({ pno }: { pno: number }) {
     };
   }, []);
 
-  /* ---------- pdf canvas render ---------- */
+  /* ---------- pdf canvas render (re-runs only when epoch/zoom change) ---------- */
   useEffect(() => {
-    if (!visible || !s.doc) return;
+    const doc = useEditor.getState().doc;
+    if (!visible || !doc) return;
     let cancelled = false;
     let task: any = null;
     (async () => {
       try {
-        const page = await s.doc.getPage(pno + 1);
+        const page = await doc.getPage(pno + 1);
         if (cancelled || !canvasRef.current) return;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         let scale = zoom * dpr;
@@ -94,12 +96,14 @@ export default function PageView({ pno }: { pno: number }) {
       } catch {}
     })();
     return () => { cancelled = true; task?.cancel?.(); };
-  }, [visible, s.doc, pno, zoom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, epoch, pno, zoom]);
 
   /* ---------- text layer (for markup selection) ---------- */
   const wantsTextLayer = s.previewMode || MARKUP_TOOLS.has(s.tool);
   useEffect(() => {
-    if (!visible || !s.doc || !textRef.current) return;
+    const doc = useEditor.getState().doc;
+    if (!visible || !doc || !textRef.current) return;
     let cancelled = false;
     let layer: any = null;
     const container = textRef.current;
@@ -107,7 +111,7 @@ export default function PageView({ pno }: { pno: number }) {
     (async () => {
       try {
         const pdfjs = await getPdfjs();
-        const page = await s.doc.getPage(pno + 1);
+        const page = await doc.getPage(pno + 1);
         if (cancelled) return;
         const vp = page.getViewport({ scale: zoom });
         container.style.setProperty("--scale-factor", String(zoom));
@@ -120,7 +124,8 @@ export default function PageView({ pno }: { pno: number }) {
       } catch {}
     })();
     return () => { cancelled = true; layer?.cancel?.(); container.innerHTML = ""; };
-  }, [visible, s.doc, pno, zoom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, epoch, pno, zoom]);
 
   /* ---------- coordinate helpers ---------- */
   const toPage = (e: { clientX: number; clientY: number }) => {
@@ -134,8 +139,8 @@ export default function PageView({ pno }: { pno: number }) {
 
   /* ---------- creation gestures ---------- */
   const onPointerDown = (e: React.PointerEvent) => {
-    if (s.previewMode) return;
     const st = useEditor.getState();
+    if (st.previewMode) return;
     const tool = st.tool;
     if (e.button !== 0) return;
 
@@ -159,6 +164,15 @@ export default function PageView({ pno }: { pno: number }) {
         text: "", color: st.opts.noteColor, createdAt: Date.now(),
       });
       st.set({ rightOpen: true, rightTab: "comments", tool: "select" });
+      return;
+    }
+    if (tool === "edit-text") {
+      // clicking past every block: drop the current selection; the flush
+      // tick then sweeps untouched block sessions away
+      if (st.selectedId || st.editingId) {
+        st.set({ selectedId: null, editingId: null });
+        st.scheduleFlush();
+      }
       return;
     }
     if (!DRAW_TOOLS.has(tool)) return;
@@ -236,7 +250,6 @@ export default function PageView({ pno }: { pno: number }) {
 
   /* ---------- markup from native text selection ---------- */
   const onMouseUpMarkup = () => {
-    if (s.previewMode) return;
     const st = useEditor.getState();
     if (!MARKUP_TOOLS.has(st.tool)) return;
     const sel = window.getSelection();
@@ -274,11 +287,11 @@ export default function PageView({ pno }: { pno: number }) {
     sel.removeAllRanges();
   };
 
-  /* ---------- edit-text blocks ---------- */
+  /* ---------- edit-text paragraphs ---------- */
   useEffect(() => {
-    if (!s.previewMode && s.tool === "edit-text" && visible) s.fetchTextBlocks(pno);
+    if (s.tool === "edit-text" && visible) s.fetchParagraphs(pno);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.tool, visible, pno, s.meta?.version, s.previewMode]);
+  }, [s.tool, visible, pno, epoch]);
 
   const cursor =
     s.tool === "pen" ? "crosshair"
@@ -286,7 +299,7 @@ export default function PageView({ pno }: { pno: number }) {
       : s.tool === "text" || s.tool === "note" ? "copy"
       : "default";
 
-  const blocks = s.textBlocks[pno];
+  const paras = s.paragraphs[pno];
 
   return (
     <div
@@ -299,6 +312,21 @@ export default function PageView({ pno }: { pno: number }) {
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
       onMouseUp={onMouseUpMarkup}
+      onDoubleClick={(e) => {
+        // edit-text: double-click on empty page space starts a new text box
+        const st = useEditor.getState();
+        if (st.previewMode || st.tool !== "edit-text") return;
+        const p = toPage(e);
+        const a: Annot = {
+          id: uid(), page: pno, type: "text",
+          x: p.x, y: p.y, w: 220, h: st.opts.fontSize * 1.6,
+          text: "", fontSize: st.opts.fontSize, fontFamily: st.opts.fontFamily,
+          color: st.opts.fontColor, bold: st.opts.bold, italic: st.opts.italic,
+          align: st.opts.align,
+        };
+        st.addAnnot(a);
+        st.set({ editingId: a.id });
+      }}
     >
       {!rendered && <div className="page-loading">…</div>}
       <canvas ref={canvasRef} className="pdf-canvas" style={{ width: W, height: H }} />
@@ -309,10 +337,6 @@ export default function PageView({ pno }: { pno: number }) {
         />
       )}
       <div ref={textRef} className={`textLayer ${wantsTextLayer ? "interactive" : ""}`} />
-
-      {s.tool === "edit-text" && Array.isArray(blocks) && (
-        <TextBlocksOverlay pno={pno} blocks={blocks} zoom={zoom} />
-      )}
 
       <AnnotLayer pno={pno} zoom={zoom} pageW={size.w} pageH={size.h} />
 
@@ -365,203 +389,6 @@ function GesturePreview({ g, zoom, pageW, pageH }: {
           stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
       )}
     </svg>
-  );
-}
-
-/* ---------------- click-to-edit existing text ---------------- */
-
-function TextBlocksOverlay({ pno, blocks, zoom }: {
-  pno: number; blocks: TextBlock[]; zoom: number;
-}) {
-  const s = useEditor();
-  const [selected, setSelected] = useState<number | null>(null);
-  const [editing, setEditing] = useState<number | null>(null);
-  const [value, setValue] = useState("");
-  const drag = useRef<{
-    index: number; mode: "move" | "resize";
-    handle?: string; startX: number; startY: number;
-    origX: number; origY: number; origW: number; origH: number;
-  } | null>(null);
-
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      const d = drag.current;
-      if (!d) return;
-      const dx = (e.clientX - d.startX) / zoom;
-      const dy = (e.clientY - d.startY) / zoom;
-
-      if (d.mode === "move") {
-        s.updateTextBlock(pno, d.index, {
-          x: d.origX + dx,
-          y: d.origY + dy,
-        });
-      } else if (d.mode === "resize") {
-        let x = d.origX;
-        let y = d.origY;
-        let w = d.origW;
-        let h = d.origH;
-        const hd = d.handle!;
-
-        if (hd.includes("e")) w = Math.max(10, d.origW + dx);
-        if (hd.includes("s")) h = Math.max(10, d.origH + dy);
-        if (hd.includes("w")) {
-          const nx = d.origX + dx;
-          w = Math.max(10, d.origW + (d.origX - nx));
-          x = d.origX + d.origW - w;
-        }
-        if (hd.includes("n")) {
-          const ny = d.origY + dy;
-          h = Math.max(10, d.origH + (d.origY - ny));
-          y = d.origY + d.origH - h;
-        }
-
-        s.updateTextBlock(pno, d.index, { x, y, w, h });
-      }
-    };
-
-    const onUp = () => {
-      drag.current = null;
-    };
-
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-    };
-  }, [zoom, pno, s]);
-
-  // Click outside to deselect
-  useEffect(() => {
-    const handleOutsideClick = () => {
-      setSelected(null);
-    };
-    window.addEventListener("click", handleOutsideClick);
-    return () => {
-      window.removeEventListener("click", handleOutsideClick);
-    };
-  }, []);
-
-  const commit = (block: TextBlock) => {
-    setEditing(null);
-    setSelected(null);
-    if (value === block.text) return;
-    s.applyTextEdit({
-      id: uid(), page: pno, type: "textedit",
-      x: block.x - 1, y: block.y - 1, w: block.w + 2, h: block.h + 2,
-      origX: block.origX, origY: block.origY, origW: block.origW, origH: block.origH,
-      text: value,
-      fontSize: block.fontSize, fontFamily: block.fontFamily,
-      color: block.color, bold: block.bold, italic: block.italic,
-    });
-  };
-
-  const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
-  const CURSORS: Record<string, string> = {
-    nw: "nwse-resize", n: "ns-resize", ne: "nesw-resize", e: "ew-resize",
-    se: "nwse-resize", s: "ns-resize", sw: "nesw-resize", w: "ew-resize",
-  };
-
-  return (
-    <div className="blocks-layer">
-      {blocks.map((b, i) => {
-        const isSelected = selected === i;
-        const isEditing = editing === i;
-
-        if (isEditing) {
-          return (
-            <textarea
-              key={i} autoFocus
-              className="annot-text-editor"
-              style={{
-                left: b.x * zoom - 2, top: b.y * zoom - 2,
-                width: Math.max(120, b.w * zoom + 30),
-                height: Math.max(30, b.h * zoom + 16),
-                fontSize: b.fontSize * zoom,
-                fontFamily: FONT_CSS[b.fontFamily],
-                fontWeight: b.bold ? 700 : 400,
-                fontStyle: b.italic ? "italic" : "normal",
-                color: b.color, lineHeight: 1.25,
-              }}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onBlur={() => commit(b)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") { e.stopPropagation(); setEditing(null); }
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit(b);
-              }}
-              onPointerDown={(e) => e.stopPropagation()}
-            />
-          );
-        }
-
-        return (
-          <div
-            key={i}
-            style={{
-              position: "absolute",
-              left: b.x * zoom - 2,
-              top: b.y * zoom - 2,
-              width: b.w * zoom + 4,
-              height: b.h * zoom + 4,
-              zIndex: isSelected ? 10 : 1,
-            }}
-          >
-            <div
-              className={`text-block-hit ${isSelected ? "sel-outline" : ""}`}
-              title="Click to select, drag to move, double-click to edit text"
-              style={{
-                width: "100%",
-                height: "100%",
-                cursor: isSelected ? "move" : "text",
-                outline: isSelected ? "1.5px solid var(--accent)" : undefined,
-                outlineOffset: isSelected ? "1px" : undefined,
-              }}
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                setSelected(i);
-                drag.current = {
-                  index: i, mode: "move",
-                  startX: e.clientX, startY: e.clientY,
-                  origX: b.x, origY: b.y, origW: b.w, origH: b.h
-                };
-              }}
-              onDoubleClick={(e) => {
-                e.stopPropagation();
-                setEditing(i);
-                setValue(b.text);
-              }}
-            />
-            {isSelected && HANDLES.map((h) => {
-              const cx = h.includes("w") ? 0 : h.includes("e") ? b.w * zoom + 4 : (b.w * zoom + 4) / 2;
-              const cy = h.includes("n") ? 0 : h.includes("s") ? b.h * zoom + 4 : (b.h * zoom + 4) / 2;
-              return (
-                <div
-                  key={h}
-                  className="handle"
-                  style={{
-                    position: "absolute",
-                    left: cx - 5, top: cy - 5,
-                    cursor: CURSORS[h],
-                    zIndex: 20,
-                    pointerEvents: "auto",
-                  }}
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    drag.current = {
-                      index: i, mode: "resize", handle: h,
-                      startX: e.clientX, startY: e.clientY,
-                      origX: b.x, origY: b.y, origW: b.w, origH: b.h
-                    };
-                  }}
-                />
-              );
-            })}
-          </div>
-        );
-      })}
-    </div>
   );
 }
 

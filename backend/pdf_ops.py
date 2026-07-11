@@ -13,6 +13,8 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
+import text_engine
+
 # ---------------------------------------------------------------- helpers
 
 BASE14 = {
@@ -121,318 +123,6 @@ def _insert_textbox_fit(page: fitz.Page, rect: fitz.Rect, text: str, *,
                                  color=color, align=align, lineheight=1.25)
         if rc >= 0:
             return
-
-
-def _block_rect(b: dict) -> fitz.Rect:
-    return fitz.Rect(b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])
-
-
-def _rect_overlap_area(a: fitz.Rect, b: dict) -> float:
-    inter = a & _block_rect(b)
-    return inter.get_area() if not inter.is_empty else 0.0
-
-
-def _estimate_text_height(text: str, width: float, font: str, size: float) -> float:
-    """Accurately estimate the vertical space needed for text inside a fixed-width box using word wrapping."""
-    if not text or not text.strip():
-        return size * 1.25 + 4
-    line_h = size * 1.25
-    usable_w = max(width, 20.0)
-    total_lines = 0
-    
-    # Try to get space width
-    try:
-        space_w = fitz.get_text_length(" ", fontname=font, fontsize=size)
-    except Exception:
-        space_w = size * 0.25
-
-    for para in text.split("\n"):
-        if not para.strip():
-            total_lines += 1
-            continue
-            
-        words = para.split(" ")
-        current_line_w = 0
-        lines_in_para = 0
-        
-        for w in words:
-            if not w:  # consecutive spaces
-                current_line_w += space_w
-                continue
-            try:
-                ww = fitz.get_text_length(w, fontname=font, fontsize=size)
-            except Exception:
-                ww = len(w) * size * 0.55
-                
-            if current_line_w == 0:
-                current_line_w = ww
-                if lines_in_para == 0:
-                    lines_in_para = 1
-            else:
-                if current_line_w + space_w + ww <= usable_w:
-                    current_line_w += space_w + ww
-                else:
-                    lines_in_para += 1
-                    current_line_w = ww
-                    
-        total_lines += max(1, lines_in_para)
-        
-    return total_lines * line_h + 8  # Add padding to avoid rounding errors
-
-
-def _extract_page_text_blocks(page: fitz.Page) -> list[dict]:
-    """Editable text blocks for one open page (same output as get_text_blocks)."""
-    d = page.get_text("dict")
-    out = []
-    for block in d.get("blocks", []):
-        if block.get("type") != 0:
-            continue
-        parts = []
-        first_span = None
-        for line in block.get("lines", []):
-            txt = "".join(s["text"] for s in line.get("spans", []))
-            if line.get("spans") and first_span is None:
-                first_span = line["spans"][0]
-            parts.append(txt)
-        text = "\n".join(parts).strip()
-        if not text or first_span is None:
-            continue
-        x0, y0, x1, y1 = block["bbox"]
-        fam, bold, italic = _span_family(first_span.get("font", ""),
-                                         first_span.get("flags", 0))
-        c = first_span.get("color", 0)
-        out.append({
-            "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0,
-            "origX": x0, "origY": y0, "origW": x1 - x0, "origH": y1 - y0,
-            "text": text,
-            "fontSize": round(first_span.get("size", 12), 1),
-            "fontFamily": fam, "bold": bold, "italic": italic,
-            "color": "#{:06x}".format(c if isinstance(c, int) else 0),
-        })
-    return _merge_text_blocks(out)
-
-
-def _insert_block_text(page: fitz.Page, block: dict, *, text: str | None = None,
-                       x: float | None = None, y: float | None = None,
-                       h: float | None = None):
-    """Insert one text block at the given (or block-default) position."""
-    bx = x if x is not None else block["x"]
-    by = y if y is not None else block["y"]
-    bw = block["w"]
-    bh = h if h is not None else block["h"]
-    content = text if text is not None else block["text"]
-    font = fontname(block["fontFamily"], block.get("bold"), block.get("italic"))
-    size = float(block["fontSize"])
-    color = hex2rgb(block.get("color", "#000000"))
-    rect = fitz.Rect(bx, by, bx + bw, by + bh)
-    _insert_textbox_fit(page, rect, content, font=font, size=size, color=color, align=0)
-
-
-def _redact_blocks(page: fitz.Page, blocks: list[dict]):
-    for b in blocks:
-        page.add_redact_annot(_block_rect(b), fill=False)
-    if not blocks:
-        return
-    try:
-        page.apply_redactions(
-            images=fitz.PDF_REDACT_IMAGE_NONE,
-            graphics=fitz.PDF_REDACT_LINE_ART_NONE,
-        )
-    except (TypeError, AttributeError):
-        page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
-
-
-def _push_blocks_to_next_page(doc: fitz.Document, pno: int,
-                              overflow_blocks: list[dict]) -> int:
-    """Place overflow blocks at the top of the next page, then reflow existing
-    content below them. Blocks that still overflow cascade to the page after."""
-    if not overflow_blocks:
-        return pno
-
-    next_pno = pno + 1
-    if next_pno >= doc.page_count:
-        cur = doc[pno]
-        doc.insert_page(next_pno, width=cur.rect.width, height=cur.rect.height)
-
-    page = doc[next_pno]
-    page_h = page.rect.height
-    margin_top = 36.0
-    gap = 6.0
-
-    existing = _extract_page_text_blocks(page)
-    if existing:
-        _redact_blocks(page, existing)
-
-    y_cursor = margin_top
-    for b in overflow_blocks:
-        _insert_block_text(page, b, y=y_cursor, h=b["h"])
-        y_cursor += b["h"] + gap
-
-    cascade: list[dict] = []
-    for b in sorted(existing, key=lambda x: (x["y"], x["x"])):
-        if y_cursor + b["h"] > page_h - 10:
-            cascade.append(b)
-        else:
-            _insert_block_text(page, b, y=y_cursor)
-            y_cursor += b["h"] + gap
-
-    if cascade:
-        _push_blocks_to_next_page(doc, next_pno, cascade)
-
-    return next_pno
-
-
-def _apply_textedits_with_reflow(page: fitz.Page, doc: fitz.Document, pno: int,
-                                 edits: list[dict]):
-    """Rewrite text blocks and reflow everything below on overflow."""
-    page_blocks = _extract_page_text_blocks(page)
-    if not page_blocks:
-        for edit in edits:
-            page.add_redact_annot(_rect(edit), fill=False)
-        _redact_blocks(page, [])
-        for edit in edits:
-            rect = _rect(edit)
-            font = fontname(edit.get("fontFamily", "helv"), edit.get("bold"), edit.get("italic"))
-            size = float(edit.get("fontSize", 12))
-            color = hex2rgb(edit.get("color", "#000000"))
-            align = ALIGN.get(edit.get("align", "left"), 0)
-            _insert_textbox_fit(page, rect, edit.get("text", ""), font=font, size=size,
-                                color=color, align=align)
-        return
-
-    matched_indices: set[int] = set()
-    edit_plans: list[tuple[int, dict]] = []
-
-    for edit in edits:
-        # Match using original baseline bounds if provided by client
-        if "origX" in edit and "origY" in edit:
-            match_rect = fitz.Rect(
-                float(edit["origX"]),
-                float(edit["origY"]),
-                float(edit["origX"]) + float(edit.get("origW", 0)),
-                float(edit["origY"]) + float(edit.get("origH", 0))
-            )
-        else:
-            match_rect = _rect(edit)
-
-        best_idx = -1
-        best_ov = 0.0
-        for idx, b in enumerate(page_blocks):
-            if idx in matched_indices:
-                continue
-            bx = b.get("origX", b["x"])
-            by = b.get("origY", b["y"])
-            bw = b.get("origW", b["w"])
-            bh = b.get("origH", b["h"])
-            block_rect = fitz.Rect(bx, by, bx + bw, by + bh)
-            inter = match_rect & block_rect
-            ov = inter.get_area() if not inter.is_empty else 0.0
-            if ov > best_ov:
-                best_ov = ov
-                best_idx = idx
-        if best_idx < 0:
-            edit_plans.append((-1, edit))
-            continue
-        matched_indices.add(best_idx)
-        edit_plans.append((best_idx, edit))
-
-    # Process bottom-up so indices stay valid when slicing
-    for idx, edit in sorted(edit_plans, key=lambda t: t[0], reverse=True):
-        if idx < 0:
-            page.add_redact_annot(_rect(edit), fill=False)
-            continue
-
-        block = page_blocks[idx]
-        font = fontname(
-            edit.get("fontFamily", block["fontFamily"]),
-            edit.get("bold", block.get("bold")),
-            edit.get("italic", block.get("italic")),
-        )
-        size = float(edit.get("fontSize", block["fontSize"]))
-        text = edit.get("text", "")
-        color = hex2rgb(edit.get("color", block.get("color", "#000000")))
-        align = ALIGN.get(edit.get("align", "left"), 0)
-
-        old_h = block["h"]
-        # Use new edit position/size, falling back to original block bounds
-        bw = float(edit.get("w", block["w"]))
-        bx = float(edit.get("x", block["x"]))
-        by = float(edit.get("y", block["y"]))
-
-        new_h = _estimate_text_height(text, bw, font, size)
-        # Shift delta is based on new bottom coordinate versus original baseline bottom
-        delta = max(0.0, (by + new_h) - (block.get("origY", block["y"]) + block.get("origH", old_h)))
-        page_h = page.rect.height
-
-        below = page_blocks[idx + 1:]
-        to_redact = page_blocks[idx:]
-        _redact_blocks(page, to_redact)
-
-        # Re-insert edited block at its custom coordinates
-        edit_rect = fitz.Rect(bx, by, bx + bw, by + new_h)
-        _insert_textbox_fit(page, edit_rect, text, font=font, size=size, color=color, align=align)
-
-        on_page: list[dict] = []
-        overflow: list[dict] = []
-
-        for b in below:
-            new_y = b["y"] + delta
-            if new_y + b["h"] > page_h - 10:
-                overflow.append({**b, "y": new_y})
-            else:
-                on_page.append({**b, "y": new_y})
-
-        for b in on_page:
-            _insert_block_text(page, b, y=b["y"])
-
-        if overflow:
-            _push_blocks_to_next_page(doc, pno, overflow)
-
-        # Update local block list for subsequent edits on same page
-        updated_block = {
-            **block,
-            "x": bx, "y": by, "w": bw, "h": new_h, "text": text,
-            "origX": bx, "origY": by, "origW": bw, "origH": new_h
-        }
-        page_blocks = page_blocks[:idx] + [updated_block] + on_page
-
-    # Fallback edits that didn't match any block
-    unmatched = [edit for idx, edit in edit_plans if idx < 0]
-    if unmatched:
-        for edit in unmatched:
-            page.add_redact_annot(_rect(edit), fill=False)
-        _redact_blocks(page, [])
-        for edit in unmatched:
-            rect = _rect(edit)
-            font = fontname(edit.get("fontFamily", "helv"), edit.get("bold"), edit.get("italic"))
-            size = float(edit.get("fontSize", 12))
-            color = hex2rgb(edit.get("color", "#000000"))
-            align = ALIGN.get(edit.get("align", "left"), 0)
-            req_width = 0.0
-            txt = edit.get("text", "")
-            if txt:
-                for line in txt.split("\n"):
-                    try:
-                        w = fitz.get_text_length(line, fontname=font, fontsize=size)
-                        if w > req_width:
-                            req_width = w
-                    except Exception:
-                        pass
-            insert_rect = fitz.Rect(rect)
-            is_single_line = rect.height <= size * 2.0
-            if is_single_line and req_width > rect.width:
-                diff = req_width - rect.width + 4
-                if align == 0:
-                    insert_rect.x1 += diff
-                elif align == 2:
-                    insert_rect.x0 -= diff
-                elif align == 1:
-                    insert_rect.x0 -= diff / 2
-                    insert_rect.x1 += diff / 2
-                elif align == 3:
-                    insert_rect.x1 += diff
-            _insert_textbox_fit(page, insert_rect, txt, font=font, size=size,
-                                color=color, align=align)
 
 
 ALIGN = {"left": 0, "center": 1, "right": 2, "justify": 3}
@@ -552,8 +242,14 @@ APPLIERS = {
 }
 
 
-def bake_annotations(path: Path, annotations: list[dict]):
-    """Apply the client's pending edit layer permanently into the PDF."""
+def bake_annotations(path: Path, annotations: list[dict]) -> tuple[list[str], list[int]]:
+    """Apply the client's pending edit layer permanently into the PDF.
+
+    Returns (layout warnings, changed page numbers). Text rewrites go
+    through the paragraph engine — the paragraph is re-derived server-side
+    from its id so geometry can never go stale — and may reflow content
+    onto the following pages, which is why the changed pages are reported.
+    """
     doc = fitz.open(str(path))
     by_page: dict[int, list[dict]] = {}
     for a in annotations:
@@ -561,22 +257,52 @@ def bake_annotations(path: Path, annotations: list[dict]):
         if 0 <= pno < doc.page_count:
             by_page.setdefault(pno, []).append(a)
 
+    pool = text_engine.FontPool(doc)
+    warnings: list[str] = []
+    changed: set[int] = set()
     for pno, items in by_page.items():
-        page = doc[pno]
-        # 1) text edits first: they redact original content, which would
-        #    also wipe any annotation placed in the same area. fill=False
-        #    removes the glyphs without painting a cover rectangle, so the
-        #    page background (colors, images) shows through untouched.
+        changed.add(pno)
+        # 1) free block transforms (move / resize / rotate): islands that
+        #    redact in place and redraw elsewhere without shifting the page.
+        #    A block op whose geometry is untouched is really a plain rewrite
+        #    and is folded into the reflow pass below instead.
         edits = [a for a in items if a["type"] == "textedit"]
+        blocks = [a for a in items if a["type"] == "textblock"]
+        if blocks:
+            reflow, free = text_engine.split_block_ops(doc, pno, blocks)
+            edits = reflow + edits
+            if free:
+                w, ch = text_engine.apply_block_ops(doc, pno, free, pool)
+                warnings += w
+                changed |= ch
+        # 2) text rewrites next: their redactions would otherwise wipe
+        #    annotations placed over the same area
         if edits:
-            _apply_textedits_with_reflow(page, doc, pno, edits)
-        # 2) everything else in creation order
+            w, ch = text_engine.apply_paragraph_edits(doc, pno, edits, pool)
+            warnings += w
+            changed |= ch
+        # 3) everything else in creation order (page fetched after the
+        #    edits: a reflow may have appended pages to the document)
+        page = doc[pno]
         for a in items:
             fn = APPLIERS.get(a["type"])
             if fn:
                 fn(page, a)
 
+    pool.finalize()
     _save_over(doc, path)
+    return warnings, sorted(changed)
+
+
+def get_paragraphs(path: Path, pno: int) -> list[dict]:
+    """Editable paragraphs for one page (click-to-edit overlay)."""
+    doc = fitz.open(str(path))
+    try:
+        if not (0 <= pno < doc.page_count):
+            return []
+        return text_engine.paragraphs_public(doc, pno)
+    finally:
+        doc.close()
 
 
 def add_watermark(path: Path, *, text: str, color: str, opacity: float,
@@ -642,155 +368,6 @@ def get_outline(path: Path) -> list[dict]:
         doc.close()
 
 
-def _span_family(font: str, flags: int) -> tuple[str, bool, bool]:
-    mono = bool(flags & 8) or "mono" in font.lower() or "courier" in font.lower()
-    serif = bool(flags & 4) or "times" in font.lower() or "serif" in font.lower()
-    bold = bool(flags & 16) or "bold" in font.lower()
-    italic = bool(flags & 2) or "italic" in font.lower() or "oblique" in font.lower()
-    fam = "cour" if mono else ("tiro" if serif else "helv")
-    return fam, bold, italic
-
-
-def _merge_text_blocks(blocks: list[dict]) -> list[dict]:
-    if not blocks:
-        return []
-    
-    # Sort blocks primarily by y (top to bottom), and then by x (left to right)
-    sorted_blocks = sorted(blocks, key=lambda b: (round(b["y"], 1), round(b["x"], 1)))
-    
-    merged = []
-    for b in sorted_blocks:
-        if not merged:
-            merged.append(b)
-            continue
-        
-        merged_any = False
-        # Look at the last few merged blocks to find a merge candidate
-        for idx in range(len(merged) - 1, max(-1, len(merged) - 4), -1):
-            prev = merged[idx]
-            
-            # Check Case A: On the same horizontal line
-            same_line = abs(prev["y"] - b["y"]) < 3.0 or (
-                max(prev["y"], b["y"]) < min(prev["y"] + prev["h"], b["y"] + b["h"])
-            )
-            
-            # Check Case B: Vertically adjacent (b is below prev)
-            gap_y = b["y"] - (prev["y"] + prev["h"])
-            max_gap = max(5.0, prev["fontSize"] * 0.35)
-            vertically_adjacent = 0 <= gap_y <= max_gap
-            
-            if same_line:
-                # Same line horizontal adjacency
-                gap_x = max(b["x"], prev["x"]) - min(b["x"] + b["w"], prev["x"] + prev["w"])
-                horiz_close = gap_x < 25.0
-                
-                if horiz_close:
-                    if prev["x"] <= b["x"]:
-                        t1 = prev["text"].strip()
-                        t2 = b["text"].strip()
-                        main_block = prev if len(prev["text"]) >= len(b["text"]) else b
-                    else:
-                        t1 = b["text"].strip()
-                        t2 = prev["text"].strip()
-                        main_block = b if len(b["text"]) >= len(prev["text"]) else prev
-                        
-                    x0 = min(prev["x"], b["x"])
-                    y0 = min(prev["y"], b["y"])
-                    x1 = max(prev["x"] + prev["w"], b["x"] + b["w"])
-                    y1 = max(prev["y"] + prev["h"], b["y"] + b["h"])
-                    
-                    prev["x"] = x0
-                    prev["y"] = y0
-                    prev["w"] = x1 - x0
-                    prev["h"] = y1 - y0
-                    prev["fontSize"] = main_block["fontSize"]
-                    prev["fontFamily"] = main_block["fontFamily"]
-                    prev["bold"] = main_block["bold"]
-                    prev["italic"] = main_block["italic"]
-                    prev["color"] = main_block["color"]
-                    
-                    prev["text"] = t1 + " " + t2 if t1 and t2 else (t1 or t2)
-                    merged_any = True
-                    break
-                    
-            elif vertically_adjacent:
-                # Vertical adjacency: require matching family, size, color. Ignore bold/italic changes.
-                font_match = (
-                    prev["fontFamily"] == b["fontFamily"]
-                    and abs(prev["fontSize"] - b["fontSize"]) < 0.5
-                    and prev["color"] == b["color"]
-                )
-                if not font_match:
-                    continue
-                    
-                horiz_overlap = max(prev["x"], b["x"]) < min(prev["x"] + prev["w"], b["x"] + b["w"])
-                left_aligned = abs(prev["x"] - b["x"]) < 15.0
-                
-                if horiz_overlap or left_aligned:
-                    x0 = min(prev["x"], b["x"])
-                    y0 = min(prev["y"], b["y"])
-                    x1 = max(prev["x"] + prev["w"], b["x"] + b["w"])
-                    y1 = max(prev["y"] + prev["h"], b["y"] + b["h"])
-                    
-                    prev["x"] = x0
-                    prev["y"] = y0
-                    prev["w"] = x1 - x0
-                    prev["h"] = y1 - y0
-                    
-                    t1 = prev["text"].strip()
-                    t2 = b["text"].strip()
-                    if t1.endswith("-"):
-                        prev["text"] = t1[:-1] + t2
-                    else:
-                        prev["text"] = t1 + " " + t2
-                    
-                    merged_any = True
-                    break
-                    
-        if not merged_any:
-            merged.append(b)
-            
-    return merged
-
-
-def get_text_blocks(path: Path, pno: int) -> list[dict]:
-    """Editable text blocks for one page (for click-to-edit)."""
-    doc = fitz.open(str(path))
-    try:
-        if not (0 <= pno < doc.page_count):
-            return []
-        d = doc[pno].get_text("dict")
-        out = []
-        for block in d.get("blocks", []):
-            if block.get("type") != 0:
-                continue
-            parts = []
-            first_span = None
-            for line in block.get("lines", []):
-                txt = "".join(s["text"] for s in line.get("spans", []))
-                if line.get("spans") and first_span is None:
-                    first_span = line["spans"][0]
-                parts.append(txt)
-            text = "\n".join(parts).strip()
-            if not text or first_span is None:
-                continue
-            x0, y0, x1, y1 = block["bbox"]
-            fam, bold, italic = _span_family(first_span.get("font", ""),
-                                             first_span.get("flags", 0))
-            c = first_span.get("color", 0)
-            out.append({
-                "x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0,
-                "origX": x0, "origY": y0, "origW": x1 - x0, "origH": y1 - y0,
-                "text": text,
-                "fontSize": round(first_span.get("size", 12), 1),
-                "fontFamily": fam, "bold": bold, "italic": italic,
-                "color": "#{:06x}".format(c if isinstance(c, int) else 0),
-            })
-        return _merge_text_blocks(out)
-    finally:
-        doc.close()
-
-
 def list_notes(path: Path) -> list[dict]:
     """All baked sticky-note annotations in the document."""
     doc = fitz.open(str(path))
@@ -812,9 +389,12 @@ def list_notes(path: Path) -> list[dict]:
 
 def _find_note(doc: fitz.Document, xref: int):
     for pno in range(doc.page_count):
-        for annot in doc[pno].annots(types=[fitz.PDF_ANNOT_TEXT]) or []:
+        # keep the page object: the annot only weak-references its parent page,
+        # so returning a fresh doc[pno] would leave the annot orphaned
+        page = doc[pno]
+        for annot in page.annots(types=[fitz.PDF_ANNOT_TEXT]) or []:
             if annot.xref == xref:
-                return doc[pno], annot
+                return page, annot
     return None, None
 
 

@@ -181,7 +181,7 @@ function SplitModal() {
               <FileText size={15} style={{ flex: "none", color: "var(--accent)" }} />
               <span className="mr-name">{f.name}</span>
               <span className="mr-pages">{f.pages} pages</span>
-              <a className="btn small" href={`/preview/${f.id}`}>Open</a>
+              <a className="btn small" href={`/editor?id=${f.id}`}>Open</a>
             </div>
           ))}
         </>
@@ -237,7 +237,7 @@ function MergeModal() {
       const meta = await api.merge(order, name);
       s.set({ modal: null });
       s.toast(`Merged ${order.length} documents into "${meta.name}"`, "success");
-      window.location.href = `/preview/${meta.id}`;
+      window.location.href = `/editor?id=${meta.id}`;
     } catch (e: any) {
       setErr(e.message);
     } finally {

@@ -126,8 +126,8 @@ function PagesTab() {
             draggable={!s.previewMode}
             onClick={(e) => clickThumb(pno, e)}
             onContextMenu={(e) => {
-              if (s.previewMode) return;
               e.preventDefault();
+              if (s.previewMode) return;
               if (!sel.includes(pno)) s.set({ selectedPages: [pno] });
               setMenu({ x: e.clientX, y: e.clientY });
             }}
@@ -176,7 +176,7 @@ function PagesTab() {
 const THUMB_W = 158;
 
 function Thumb({ pno }: { pno: number }) {
-  const doc = useEditor((s) => s.doc);
+  const epoch = useEditor((s) => s.pageEpochs[pno] ?? 0);
   const size = useEditor((s) => s.pageSizes[pno]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -184,6 +184,8 @@ function Thumb({ pno }: { pno: number }) {
     let cancelled = false;
     let task: any = null;
     (async () => {
+      // read the latest doc at render time; the epoch dep decides *when*
+      const doc = useEditor.getState().doc;
       if (!doc || !canvasRef.current) return;
       try {
         const page = await doc.getPage(pno + 1);
@@ -208,7 +210,7 @@ function Thumb({ pno }: { pno: number }) {
       } catch {}
     })();
     return () => { cancelled = true; task?.cancel?.(); };
-  }, [doc, pno]);
+  }, [epoch, pno]);
 
   const ratio = size ? size.h / size.w : 1.3;
   return <canvas ref={canvasRef} style={{ width: "100%", aspectRatio: `1 / ${ratio}` }} />;

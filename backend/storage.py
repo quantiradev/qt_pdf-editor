@@ -17,8 +17,18 @@ HISTORY_DIR = DATA_DIR / "history"
 DB_PATH = DATA_DIR / "db.json"
 
 MAX_HISTORY = 20
-
 _lock = threading.Lock()
+
+# FastAPI runs sync endpoints on a threadpool, so two requests can mutate the
+# same PDF concurrently; every mutating endpoint serialises on this per-file lock.
+_file_locks: dict[str, threading.Lock] = {}
+_file_locks_guard = threading.Lock()
+
+
+def op_lock(file_id: str) -> threading.Lock:
+    with _file_locks_guard:
+        return _file_locks.setdefault(file_id, threading.Lock())
+
 
 
 def _ensure_dirs():

@@ -3,7 +3,7 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { useEffect } from "react";
 import { api } from "@/lib/api";
-import { useEditor } from "@/lib/store";
+import { realEdits, useEditor } from "@/lib/store";
 import type { Tool } from "@/lib/types";
 import CanvasStage from "./CanvasStage";
 import LeftSidebar from "./LeftSidebar";
@@ -24,24 +24,28 @@ export default function Editor({ id }: { id: string }) {
 
   useEffect(() => {
     s.set({ previewMode: false });
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      s.set({ leftOpen: false, rightOpen: false });
+    }
     s.loadFile(id);
     // expose for debugging / scripted testing in dev
     (window as any).__pdfstore = useEditor;
     return () => {
       // client-side navigation away: push any not-yet-committed edits
-      // into the PDF (best effort — the auto-flush usually beat us here)
+      // into the PDF (best effort — the auto-flush usually beat us here).
+      // Untouched block sessions are selections, not edits: skip them.
       const st = useEditor.getState();
-      if (st.fileId && st.annots.length) {
-        api.saveAnnotations(st.fileId, st.annots).catch(() => {});
+      const batch = realEdits(st.annots);
+      if (st.fileId && batch.length) {
+        api.saveAnnotations(st.fileId, batch).catch(() => {});
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
-
   // warn about unsaved edits when closing the tab
   useEffect(() => {
     const onUnload = (e: BeforeUnloadEvent) => {
-      if (useEditor.getState().annots.length) e.preventDefault();
+      if (realEdits(useEditor.getState().annots).length) e.preventDefault();
     };
     window.addEventListener("beforeunload", onUnload);
     return () => window.removeEventListener("beforeunload", onUnload);
@@ -80,7 +84,10 @@ export default function Editor({ id }: { id: string }) {
         if (st.modal) st.set({ modal: null });
         else if (st.editingId) st.set({ editingId: null });
         else if (st.pendingLink) st.set({ pendingLink: null });
-        else if (st.selectedId) st.set({ selectedId: null });
+        else if (st.selectedId) {
+          st.set({ selectedId: null });
+          st.scheduleFlush(); // sweeps an untouched block session away
+        }
         else st.setTool("select");
         return;
       }

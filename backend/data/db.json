@@ -61,15 +61,19 @@
   "9baffb59aa58": {
     "id": "9baffb59aa58",
     "name": "Quantira-brand-book-manual_compressed.pdf",
-    "size": 1073066,
+    "size": 1094247,
     "pages": 21,
-    "version": 8,
+    "version": 12,
     "created_at": 1783686512.739466,
-    "updated_at": 1783686995.3877811,
-    "opened_at": 1783686517.911055,
-    "deleted": false,
+    "updated_at": 1783753911.552154,
+    "opened_at": 1783753848.3155193,
+    "deleted": true,
     "undo": [
-      "9baffb59aa58-7-c973e2.pdf"
+      "9baffb59aa58-7-c973e2.pdf",
+      "9baffb59aa58-8-2004ff.pdf",
+      "9baffb59aa58-9-2ae223.pdf",
+      "9baffb59aa58-10-16af62.pdf",
+      "9baffb59aa58-11-d35b2d.pdf"
     ],
     "redo": []
   },
@@ -80,8 +84,51 @@
     "pages": 2,
     "version": 1,
     "created_at": 1783744987.6018553,
-    "updated_at": 1783744988.5330534,
+    "updated_at": 1783753912.9778583,
     "opened_at": 1783744988.5320542,
-    "deleted": false
+    "deleted": true
+  },
+  "febccdda73f2": {
+    "id": "febccdda73f2",
+    "name": "Kulasekhar-dev.pdf",
+    "size": 265690,
+    "pages": 2,
+    "version": 15,
+    "created_at": 1783752350.4299772,
+    "updated_at": 1783753912.110492,
+    "opened_at": 1783753902.5497253,
+    "deleted": true,
+    "undo": [
+      "febccdda73f2-3-09b182.pdf",
+      "febccdda73f2-4-9b9df0.pdf",
+      "febccdda73f2-5-20e810.pdf",
+      "febccdda73f2-6-f8483a.pdf",
+      "febccdda73f2-7-7044b3.pdf",
+      "febccdda73f2-8-5fc413.pdf",
+      "febccdda73f2-9-34ec6a.pdf",
+      "febccdda73f2-10-c6cc4f.pdf",
+      "febccdda73f2-13-1721da.pdf",
+      "febccdda73f2-14-8c53fa.pdf",
+      "febccdda73f2-15-db23db.pdf"
+    ],
+    "redo": []
+  },
+  "95666bbff3b8": {
+    "id": "95666bbff3b8",
+    "name": "Kulasekhar-dev.pdf",
+    "size": 369334,
+    "pages": 2,
+    "version": 5,
+    "created_at": 1783753918.3166232,
+    "updated_at": 1783755067.5061386,
+    "opened_at": 1783755067.5061386,
+    "deleted": false,
+    "undo": [
+      "95666bbff3b8-1-6e991a.pdf",
+      "95666bbff3b8-2-a450b5.pdf",
+      "95666bbff3b8-3-9d5f80.pdf",
+      "95666bbff3b8-4-baa41f.pdf"
+    ],
+    "redo": []
   }
 }

@@ -12,7 +12,8 @@ export type Tool =
   | "arrow"
   | "image"
   | "note"
-  | "link";
+  | "link"
+  | "sign";
 
 export interface FileMeta {
   id: string;
@@ -52,19 +53,31 @@ export interface TextAnnot extends Base, Rect {
   url?: string;
 }
 
-export interface TextEditAnnot extends Base, Rect {
-  type: "textedit";
+/**
+ * A live text-block edit session: one existing paragraph lifted off the page
+ * as a movable / resizable / rotatable object (ElasticPDF-style "Edit Text").
+ * On bake the server redacts the original paragraph and re-wraps the text
+ * into the new box; pure in-place rewrites are routed through the reflow
+ * engine instead. `h` is derived from the wrapped content, never set by hand.
+ */
+export interface TextBlockAnnot extends Base, Rect {
+  type: "textblock";
+  /** Server-side paragraph id — geometry/styles are re-derived from it on bake. */
+  paraId: string;
+  /** Degrees, CSS convention (clockwise-positive), about the box centre. */
+  rotate: number;
   text: string;
-  fontSize: number;
   fontFamily: "helv" | "tiro" | "cour";
+  fontSize: number;
   color: string;
-  bold?: boolean;
-  italic?: boolean;
-  align?: "left" | "center" | "right";
-  origX?: number;
-  origY?: number;
-  origW?: number;
-  origH?: number;
+  bold: boolean;
+  italic: boolean;
+  align: "left" | "center" | "right" | "justify";
+  /** Baseline distance in pt — drives the overlay's line-height. */
+  leading: number;
+  /** The paragraph's original box: masked while the block floats elsewhere. */
+  orig: Rect;
+  origText: string;
 }
 
 export interface MarkupAnnot extends Base {
@@ -124,7 +137,7 @@ export interface LinkAnnot extends Base, Rect {
 
 export type Annot =
   | TextAnnot
-  | TextEditAnnot
+  | TextBlockAnnot
   | MarkupAnnot
   | InkAnnot
   | ShapeAnnot
@@ -139,17 +152,19 @@ export interface OutlineItem {
   page: number;
 }
 
-export interface TextBlock extends Rect {
+/** One editable paragraph as detected by the backend text engine. */
+export interface Paragraph extends Rect {
+  id: string;
   text: string;
+  align: "left" | "center" | "right" | "justify";
+  leading: number; // baseline distance, pt
   fontSize: number;
   fontFamily: "helv" | "tiro" | "cour";
   bold: boolean;
   italic: boolean;
   color: string;
-  origX?: number;
-  origY?: number;
-  origW?: number;
-  origH?: number;
+  lines: number;
+  editable: boolean;
 }
 
 export interface BakedNote {

@@ -17,8 +17,9 @@ export default function StatusBar() {
     const el = s.stageEl;
     const size = s.pageSizes[s.currentPage];
     if (!el || !size) return;
-    const availW = el.clientWidth - 72;
-    const availH = el.clientHeight - 56;
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const availW = isMobile ? el.clientWidth - 16 : el.clientWidth - 72;
+    const availH = isMobile ? el.clientHeight - 40 : el.clientHeight - 56;
     const z = mode === "width"
       ? availW / size.w
       : Math.min(availW / size.w, availH / size.h);

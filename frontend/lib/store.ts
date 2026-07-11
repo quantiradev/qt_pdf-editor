@@ -3,10 +3,32 @@ import { create } from "zustand";
 import { api } from "./api";
 import { loadDocument } from "./pdf";
 import type {
-  Annot, BakedNote, FileMeta, OutlineItem, PageSize, TextBlock,
-  TextEditAnnot, Tool, ToolOpts,
+  Annot, BakedNote, FileMeta, OutlineItem, PageSize, Paragraph,
+  TextBlockAnnot, Tool, ToolOpts,
 } from "./types";
 import { clamp, uid } from "./utils";
+
+/**
+ * An open block session with nothing changed yet is a selection, not an
+ * edit — it must never bake and is dropped once deselected. `h` is derived
+ * from the wrapped content, so it does not count as a change.
+ */
+export function isPristineBlock(a: Annot): boolean {
+  if (a.type !== "textblock") return false;
+  const b = a as TextBlockAnnot;
+  return (
+    Math.abs(b.x - b.orig.x) < 0.25 &&
+    Math.abs(b.y - b.orig.y) < 0.25 &&
+    Math.abs(b.w - b.orig.w) < 0.25 &&
+    Math.abs(((b.rotate % 360) + 360) % 360) < 0.05 &&
+    b.text === b.origText
+  );
+}
+
+/** Pending edits that will actually change the PDF. */
+export function realEdits(annots: Annot[]): Annot[] {
+  return annots.filter((a) => !isPristineBlock(a));
+}
 
 export interface Toast {
   id: string;
@@ -36,10 +58,12 @@ interface EditorState {
   meta: FileMeta | null;
   doc: any | null;
   pageSizes: PageSize[];
+  /** bumped per page when its content changed — pages re-render only then */
+  pageEpochs: number[];
   loadError: string | null;
   outline: OutlineItem[];
   bakedNotes: BakedNote[];
-  textBlocks: Record<number, TextBlock[] | "loading">;
+  paragraphs: Record<number, Paragraph[] | "loading">;
 
   // view
   zoom: number;
@@ -80,7 +104,7 @@ interface EditorState {
   dismissToast: (id: string) => void;
 
   loadFile: (id: string) => Promise<void>;
-  reloadDoc: () => Promise<void>;
+  reloadDoc: (changedPages?: number[]) => Promise<void>;
 
   setTool: (t: Tool) => void;
   setOpts: (p: Partial<ToolOpts>) => void;
@@ -98,13 +122,13 @@ interface EditorState {
   addAnnot: (a: Annot, select?: boolean) => void;
   updateAnnot: (id: string, patch: Partial<Annot>, withSnapshot?: boolean) => void;
   removeAnnot: (id: string) => void;
-  applyTextEdit: (edit: TextEditAnnot) => Promise<void>;
+  /** Lift a paragraph off the page as a live block object (edit-text tool). */
+  beginBlockEdit: (block: TextBlockAnnot) => void;
 
   save: (quiet?: boolean) => Promise<boolean>;
   ensureSaved: () => Promise<boolean>;
   runOp: (label: string, fn: () => Promise<unknown>) => Promise<boolean>;
-  fetchTextBlocks: (page: number) => void;
-  updateTextBlock: (page: number, index: number, patch: Partial<TextBlock>) => void;
+  fetchParagraphs: (page: number) => void;
   refreshNotes: () => Promise<void>;
 }
 
@@ -136,10 +160,11 @@ export const useEditor = create<EditorState>((set, get) => ({
   meta: null,
   doc: null,
   pageSizes: [],
+  pageEpochs: [],
   loadError: null,
   outline: [],
   bakedNotes: [],
-  textBlocks: {},
+  paragraphs: {},
 
   zoom: 1,
   viewMode: "continuous",
@@ -181,20 +206,22 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   loadFile: async (id) => {
     set({
-      fileId: id, meta: null, doc: null, pageSizes: [], loadError: null,
+      fileId: id, meta: null, doc: null, pageSizes: [], pageEpochs: [],
+      loadError: null,
       annots: [], past: [], future: [], selectedId: null, editingId: null,
-      outline: [], bakedNotes: [], textBlocks: {}, selectedPages: [],
+      outline: [], bakedNotes: [], paragraphs: {}, selectedPages: [],
       currentPage: 0, interacting: 0,
     });
     try {
       await api.markOpened(id).catch(() => {});
       await get().reloadDoc();
     } catch (e: any) {
-      set({ loadError: e.message ?? "Failed to load document" });
+      console.error(e);
+      set({ loadError: String(e.stack || e.message) ?? "Failed to load document" });
     }
   },
 
-  reloadDoc: async () => {
+  reloadDoc: async (changedPages) => {
     const id = get().fileId;
     if (!id) return;
     const meta = await api.meta(id);
@@ -206,8 +233,18 @@ export const useEditor = create<EditorState>((set, get) => ({
       const vp = page.getViewport({ scale: 1 });
       sizes.push({ w: vp.width, h: vp.height });
     }
+    // only pages whose content changed get a new epoch (and thus re-render);
+    // untouched pages keep their canvas pixels — no full-document repaint
+    const prev = get().pageEpochs;
+    const bumpAll = !changedPages || sizes.length !== prev.length;
+    const pageEpochs = sizes.map(
+      (_, i) => (prev[i] ?? 0) + (bumpAll || changedPages!.includes(i) ? 1 : 0));
+    const paragraphs = { ...get().paragraphs };
+    for (const k of Object.keys(paragraphs)) {
+      if (bumpAll || changedPages!.includes(Number(k))) delete paragraphs[Number(k)];
+    }
     set({
-      meta, doc, pageSizes: sizes, textBlocks: {},
+      meta, doc, pageSizes: sizes, pageEpochs, paragraphs,
       currentPage: clamp(get().currentPage, 0, doc.numPages - 1),
       selectedPages: get().selectedPages.filter((p) => p < doc.numPages),
     });
@@ -217,7 +254,14 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   setTool: (tool) => {
-    set({ tool, editingId: null, pendingLink: null });
+    // untouched block sessions are selections, not edits — leaving the tool
+    // discards them so the auto-flush never sees no-ops
+    set((s) => ({
+      tool,
+      editingId: null,
+      pendingLink: null,
+      annots: s.annots.filter((a) => !isPristineBlock(a)),
+    }));
     if (tool !== "select") set({ selectedId: null });
   },
   setOpts: (p) => set((s) => ({ opts: { ...s.opts, ...p } })),
@@ -251,15 +295,25 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   flushPending: async () => {
     const st = get();
-    if (!st.annots.length) return;
+    // deselected-but-untouched block sessions are stale — quietly drop them
+    const stale = st.annots.filter(
+      (a) => isPristineBlock(a) && a.id !== st.selectedId);
+    if (stale.length) {
+      const ids = new Set(stale.map((a) => a.id));
+      set((s) => ({ annots: s.annots.filter((a) => !ids.has(a.id)) }));
+    }
+    if (!get().annots.length) return;
     // never commit mid-gesture / mid-typing — wait for idle
     if (st.saving || st.busy || st.editingId || st.pendingLink || st.interacting > 0) {
       st.scheduleFlush();
       return;
     }
+    // an untouched block selection is not an edit: leave it open without
+    // burning defer cycles — it is dropped the moment it loses selection
+    if (!realEdits(get().annots).length) return;
     // give the user a few idle cycles to adjust a still-selected object,
     // then commit it regardless
-    if (st.selectedId && st.annots.some((a) => a.id === st.selectedId)) {
+    if (st.selectedId && get().annots.some((a) => a.id === st.selectedId)) {
       selectedDefers += 1;
       if (selectedDefers < MAX_SELECTED_DEFERS) {
         st.scheduleFlush();
@@ -353,40 +407,45 @@ export const useEditor = create<EditorState>((set, get) => ({
     get().scheduleFlush();
   },
 
-  /** Rewrite an existing text block — applied to the PDF right now. */
-  applyTextEdit: async (edit) => {
-    const id = get().fileId;
-    if (!id) return;
-    set({ busy: "Rewriting text in the PDF" });
-    try {
-      await api.saveAnnotations(id, [edit as Annot]);
-      await get().reloadDoc();
-    } catch (e: any) {
-      get().toast(`Text edit failed: ${e.message}`, "error");
-    } finally {
-      set({ busy: null });
-    }
+  beginBlockEdit: (block) => {
+    // spawned directly (no undo snapshot): grabbing a block is a selection;
+    // history starts with the first actual change
+    set((s) => ({
+      annots: [...s.annots, block],
+      selectedId: block.id,
+      editingId: null,
+    }));
+    selectedDefers = 0;
+    get().scheduleFlush(); // the stale-session sweep runs on this tick
   },
 
   save: async (quiet = false) => {
-    const { fileId, annots, saving } = get();
+    const { fileId, saving } = get();
     if (!fileId || saving) return false;
-    if (!annots.length) {
+    // untouched block sessions are selections, not edits — never bake them
+    const batch = realEdits(get().annots);
+    if (!batch.length) {
       if (!quiet) get().toast("Everything is already saved in the PDF");
       return true;
     }
     if (!quiet) set({ editingId: null, selectedId: null });
     set({ saving: true });
-    const batch = [...annots];
     const ids = new Set(batch.map((a) => a.id));
+    const changedPages = Array.from(new Set(batch.map((a) => a.page)));
     try {
-      await api.saveAnnotations(fileId, batch);
+      const meta = await api.saveAnnotations(fileId, batch);
+      for (const w of meta.warnings ?? []) get().toast(w, "info");
+      const changedSet = new Set(meta.changed_pages ?? changedPages);
       set((s) => ({
-        annots: s.annots.filter((a) => !ids.has(a.id)),
+        // baked edits leave the queue; open block sessions on a re-baked
+        // page now hold stale paragraph ids and are dropped with them
+        annots: s.annots.filter(
+          (a) => !ids.has(a.id) && !(isPristineBlock(a) && changedSet.has(a.page))),
         past: [], future: [],
         selectedId: s.selectedId && ids.has(s.selectedId) ? null : s.selectedId,
       }));
-      await get().reloadDoc();
+      // prefer the server's list — a text-edit reflow can touch later pages
+      await get().reloadDoc(meta.changed_pages ?? changedPages);
       if (get().annots.length) get().scheduleFlush();
       return true;
     } catch (e: any) {
@@ -398,7 +457,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   ensureSaved: async () => {
-    if (!get().annots.length) return true;
+    if (!realEdits(get().annots).length) return true;
     return get().save(true);
   },
 
@@ -418,38 +477,15 @@ export const useEditor = create<EditorState>((set, get) => ({
     }
   },
 
-  fetchTextBlocks: (page) => {
-    const { fileId, textBlocks } = get();
-    if (!fileId || textBlocks[page]) return;
-    set({ textBlocks: { ...textBlocks, [page]: "loading" } });
-    api.textBlocks(fileId, page)
-      .then((blocks) => {
-        const mapped = (blocks || []).map((b: any) => ({
-          ...b,
-          origX: b.origX ?? b.x,
-          origY: b.origY ?? b.y,
-          origW: b.origW ?? b.w,
-          origH: b.origH ?? b.h,
-        }));
-        set((s) => ({ textBlocks: { ...s.textBlocks, [page]: mapped } }));
-      })
+  fetchParagraphs: (page) => {
+    const { fileId, paragraphs } = get();
+    if (!fileId || paragraphs[page]) return;
+    set({ paragraphs: { ...paragraphs, [page]: "loading" } });
+    api.paragraphs(fileId, page)
+      .then((blocks) =>
+        set((s) => ({ paragraphs: { ...s.paragraphs, [page]: blocks } })))
       .catch(() =>
-        set((s) => ({ textBlocks: { ...s.textBlocks, [page]: [] } })));
-  },
-
-  updateTextBlock: (page, index, patch) => {
-    set((s) => {
-      const pageBlocks = s.textBlocks[page];
-      if (!Array.isArray(pageBlocks)) return {};
-      const nextBlocks = [...pageBlocks];
-      nextBlocks[index] = { ...nextBlocks[index], ...patch } as TextBlock;
-      return {
-        textBlocks: {
-          ...s.textBlocks,
-          [page]: nextBlocks,
-        },
-      };
-    });
+        set((s) => ({ paragraphs: { ...s.paragraphs, [page]: [] } })));
   },
 
   refreshNotes: async () => {
@@ -462,4 +498,4 @@ export const useEditor = create<EditorState>((set, get) => ({
 }));
 
 /** Are edits still on their way into the PDF? */
-export const useDirty = () => useEditor((s) => s.annots.length > 0);
+export const useDirty = () => useEditor((s) => realEdits(s.annots).length > 0);

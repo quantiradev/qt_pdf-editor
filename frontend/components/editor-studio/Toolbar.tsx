@@ -1,7 +1,7 @@
 "use client";
 import {
   ArrowUpRight, Bold, Circle, Highlighter, Image as ImageIcon, Italic, Link2,
-  Minus, MousePointer2, Pencil, Square, StickyNote, Strikethrough,
+  Minus, MousePointer2, Pencil, PenTool, Square, StickyNote, Strikethrough,
   TextCursorInput, Type, Underline as UnderlineIcon,
 } from "lucide-react";
 import { useRef } from "react";
@@ -13,7 +13,7 @@ import {
 
 const TOOLS: { tool: Tool; icon: React.ReactNode; label: string; key: string }[] = [
   { tool: "select", icon: <MousePointer2 size={17} />, label: "Select / move", key: "V" },
-  { tool: "edit-text", icon: <TextCursorInput size={17} />, label: "Edit existing text", key: "E" },
+  { tool: "edit-text", icon: <TextCursorInput size={17} />, label: "Edit text blocks — move, resize, rotate, retype", key: "E" },
   { tool: "text", icon: <Type size={17} />, label: "Add text box", key: "T" },
   { tool: "highlight", icon: <Highlighter size={17} />, label: "Highlight text", key: "H" },
   { tool: "underline", icon: <UnderlineIcon size={17} />, label: "Underline text", key: "U" },
@@ -24,6 +24,7 @@ const TOOLS: { tool: Tool; icon: React.ReactNode; label: string; key: string }[]
   { tool: "line", icon: <Minus size={17} />, label: "Line", key: "L" },
   { tool: "arrow", icon: <ArrowUpRight size={17} />, label: "Arrow", key: "A" },
   { tool: "image", icon: <ImageIcon size={17} />, label: "Insert image", key: "" },
+  { tool: "sign", icon: <PenTool size={17} />, label: "Sign document", key: "" },
   { tool: "note", icon: <StickyNote size={17} />, label: "Sticky note", key: "N" },
   { tool: "link", icon: <Link2 size={17} />, label: "Add hyperlink", key: "K" },
 ];
@@ -100,6 +101,34 @@ function ContextStrip() {
   const s = useEditor();
   const sel = s.annots.find((a) => a.id === s.selectedId);
 
+  // A live text block gets its own strip (colors/fonts of existing text are
+  // preserved by the engine, so no restyle controls here — just rotation).
+  if (sel?.type === "textblock" && (s.tool === "select" || s.tool === "edit-text")) {
+    return (
+      <div className="ctx-strip">
+        <span className="cs-label">Text block</span>
+        <span className="cs-label">Rotation</span>
+        <input
+          className="input" type="number" step={1} min={-180} max={180}
+          style={{ width: 64, padding: "5px 6px" }}
+          value={Math.round(sel.rotate * 10) / 10}
+          onChange={(e) => s.updateAnnot(sel.id, {
+            rotate: Math.max(-180, Math.min(180, Number(e.target.value) || 0)),
+          } as any, true)}
+        />
+        {sel.rotate !== 0 && (
+          <button className="btn small" onClick={() =>
+            s.updateAnnot(sel.id, { rotate: 0 } as any, true)}>
+            Straighten
+          </button>
+        )}
+        <span className="cs-label">
+          Drag to move · side handles re-wrap the text · double-click to retype
+        </span>
+      </div>
+    );
+  }
+
   // Selection overrides tool: show quick controls for the selected object.
   if (s.tool === "select" && sel) {
     return (
@@ -135,7 +164,15 @@ function ContextStrip() {
     case "select":
       return <div className="ctx-strip"><span className="cs-label">Click an object to select it · drag to move · Delete to remove</span></div>;
     case "edit-text":
-      return <div className="ctx-strip"><span className="cs-label">Click any text block on the page to rewrite it</span></div>;
+      return (
+        <div className="ctx-strip">
+          <span className="cs-label">
+            Click a text block to pick it up — drag to move, pull the side
+            handles to re-wrap, use the knob to rotate, double-click to retype.
+            Double-click empty space for a new text box.
+          </span>
+        </div>
+      );
     case "text":
       return (
         <div className="ctx-strip">
@@ -234,7 +271,7 @@ function ContextStrip() {
 
 function selLabel(t: string) {
   const names: Record<string, string> = {
-    text: "text box", textedit: "text edit", highlight: "highlight",
+    text: "text box", textblock: "text block", highlight: "highlight",
     underline: "underline", strikeout: "strike-through", ink: "pen stroke",
     rect: "rectangle", ellipse: "ellipse", line: "line", arrow: "arrow",
     image: "image", note: "sticky note", link: "hyperlink",
