@@ -1,6 +1,6 @@
 "use client";
 import {
-  Copy, FilePlus2, ListTree, RotateCcw, RotateCw, Trash2,
+  Copy, FilePlus2, ListTree, Plus, RotateCcw, RotateCw, Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -89,6 +89,9 @@ function PagesTab() {
         s.toast(`Extract failed: ${e.message}`, "error");
       }
     },
+    insertBlank: () =>
+      s.runOp("Inserting page", () =>
+        api.insertPage(s.fileId!, Math.max(...targets))),
   };
 
   useEffect(() => {
@@ -108,6 +111,7 @@ function PagesTab() {
         <div className="page-ops-bar">
           <button className="icon-btn" title="Rotate left 90°" onClick={() => op.rotate(-90)}><RotateCcw size={15} /></button>
           <button className="icon-btn" title="Rotate right 90°" onClick={() => op.rotate(90)}><RotateCw size={15} /></button>
+          <button className="icon-btn" title="Insert blank page after" onClick={op.insertBlank}><Plus size={15} /></button>
           <button className="icon-btn" title="Duplicate page(s)" onClick={op.duplicate}><Copy size={15} /></button>
           <button className="icon-btn" title="Extract page(s) to a new PDF" onClick={op.extract}><FilePlus2 size={15} /></button>
           <button className="icon-btn" title="Delete page(s)" onClick={op.remove}><Trash2 size={15} /></button>
@@ -163,6 +167,7 @@ function PagesTab() {
         <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
           <button onClick={() => op.rotate(-90)}><RotateCcw size={15} /> Rotate left</button>
           <button onClick={() => op.rotate(90)}><RotateCw size={15} /> Rotate right</button>
+          <button onClick={op.insertBlank}><Plus size={15} /> Insert blank page after</button>
           <button onClick={op.duplicate}><Copy size={15} /> Duplicate</button>
           <button onClick={op.extract}><FilePlus2 size={15} /> Extract to new PDF</button>
           <hr />

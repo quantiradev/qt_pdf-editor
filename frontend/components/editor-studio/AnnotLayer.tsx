@@ -134,10 +134,23 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
       }
     };
     const onUp = () => {
-      if (drag.current) {
-        drag.current = null;
-        useEditor.getState().endInteract();
+      const d = drag.current;
+      if (!d) return;
+      drag.current = null;
+      const st = useEditor.getState();
+      if (d.mode === "move") {
+        const a: any = st.annots.find((x) => x.id === d.id);
+        // a sub-point drag is a click, not a move — snap back so a pointer
+        // twitch while selecting a block never counts as an edit (and never
+        // triggers a destructive bake)
+        if (a?.type === "textblock"
+            && (a.x !== d.orig.x || a.y !== d.orig.y)
+            && Math.abs(a.x - d.orig.x) < 0.75
+            && Math.abs(a.y - d.orig.y) < 0.75) {
+          st.updateAnnot(a.id, { x: d.orig.x, y: d.orig.y } as any);
+        }
       }
+      st.endInteract();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -551,8 +564,9 @@ function TextBlockView({ a, zoom, startDrag }: {
           textAlign: a.align,
           color: a.color,
           lineHeight: `${a.leading / a.fontSize}`,
+          // no break-word: the bake engine never splits a word mid-word,
+          // so the overlay must not either (a long word overflows instead)
           whiteSpace: "pre-wrap",
-          overflowWrap: "break-word",
           minHeight: a.fontSize * zoom,
           userSelect: editing ? "text" : "none",
           cursor: editing ? "text" : "inherit",
@@ -629,7 +643,11 @@ function TextEditorOverlay({ a, style }: {
       onBlur={commit}
       onKeyDown={(e) => {
         e.stopPropagation();
-        if (e.key === "Escape") s.set({ editingId: null });
+        if (e.key === "Escape") {
+          // discard: a never-filled box must not linger in the edit queue
+          if (!a.text.trim()) s.removeAnnot(a.id);
+          else s.set({ editingId: null });
+        }
         if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit();
       }}
       onPointerDown={(e) => e.stopPropagation()}

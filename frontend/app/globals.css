@@ -1,9 +1,14 @@
 @import "tailwindcss";
 
+/* The whole app ships one theme: royal blue & white. The `dark:` variant is
+   scoped to a `.dark` class that is never set, so system dark mode cannot
+   flip the pages dark. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
-  --foreground: #09090b;
-  --accent: #6366f1;
+  --foreground: #131f4d;
+  --accent: #4169e1;
   --accent-foreground: #ffffff;
 }
 
@@ -12,6 +17,51 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), monospace;
+
+  /* Accent scales remapped to royal blue (#4169e1) so every indigo/violet
+     utility across the landing, auth, profile and dashboard pages retints
+     without touching the components. */
+  --color-indigo-50: #eef3ff;
+  --color-indigo-100: #dde8ff;
+  --color-indigo-200: #c3d4fb;
+  --color-indigo-300: #9fbaf7;
+  --color-indigo-400: #6e93ee;
+  --color-indigo-500: #4f75e8;
+  --color-indigo-600: #4169e1;
+  --color-indigo-700: #3457c8;
+  --color-indigo-800: #2c47a3;
+  --color-indigo-900: #273c82;
+  --color-indigo-950: #15234f;
+  --color-violet-500: #4f75e8;
+  --color-violet-600: #4169e1;
+  /* Cyan was a secondary accent — folded into royal blue. */
+  --color-cyan-400: #6e93ee;
+  --color-cyan-500: #4f75e8;
+  --color-cyan-600: #4169e1;
+
+  /* Non-standard shades referenced by existing markup — without these
+     tokens Tailwind emits nothing and the text/fills silently vanish. */
+  --color-indigo-450: #5f84eb;
+  --color-indigo-550: #4a71e5;
+  --color-indigo-650: #3b60d5;
+  --color-cyan-550: #4a71e5;
+  --color-cyan-705: #3457c8;
+  --color-emerald-550: #0d9e6e;
+  --color-emerald-650: #058c5e;
+  --color-zinc-105: #f2f2f3;
+  --color-zinc-150: #ececee;
+  --color-zinc-250: #dcdcdf;
+  --color-zinc-305: #d2d2d6;
+  --color-zinc-405: #9fa0a9;
+  --color-zinc-450: #898992;
+  --color-zinc-505: #6f6f78;
+  --color-zinc-550: #62626a;
+  --color-zinc-555: #616169;
+  --color-zinc-650: #494950;
+  --color-zinc-705: #3e3e45;
+  --color-zinc-850: #202023;
+  --color-zinc-905: #171719;
+  --color-zinc-955: #08080a;
 
   --animate-float: float 6s ease-in-out infinite;
   --animate-float-slow: float 9s ease-in-out infinite;
@@ -36,13 +86,6 @@
       background-size: 400% 400%;
       background-position: 100% 50%;
     }
-  }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #09090b;
-    --foreground: #fafafa;
   }
 }
 
@@ -120,18 +163,19 @@ body {
 
 :root {
   /* Editor — Light Theme */
-  --e-bg0: #f4f6fb;           /* outermost shell */
-  --e-bg1: #ffffff;           /* sidebars / topbar */
-  --e-bg2: #eef1f8;           /* card / input backgrounds */
-  --e-bg3: #e2e7f3;           /* hover backgrounds */
-  --e-stage: #dde3ef;         /* canvas stage */
-  --e-stroke: #d8dcea;        /* primary border */
-  --e-stroke2: #b8c2d8;       /* stronger border */
-  --e-text: #1b2035;          /* primary text */
-  --e-muted: #566080;         /* secondary text */
-  --e-faint: #8b97b8;         /* placeholder / hints */
-  --e-accent: #4f6cf7;        /* accent blue */
-  --e-accent-soft: rgba(79, 108, 247, 0.12);
+  /* Royal blue & white theme */
+  --e-bg0: #f4f7ff;           /* outermost shell — near-white royal tint */
+  --e-bg1: #ffffff;           /* sidebars / topbar — white */
+  --e-bg2: #eef3ff;           /* card / input backgrounds */
+  --e-bg3: #dde8ff;           /* hover backgrounds */
+  --e-stage: #4169e1;         /* canvas stage — royal blue */
+  --e-stroke: #d7e0f8;        /* primary border */
+  --e-stroke2: #b0c1f0;       /* stronger border */
+  --e-text: #131f4d;          /* primary text — deep navy */
+  --e-muted: #4a5a9e;         /* secondary text */
+  --e-faint: #8695cc;         /* placeholder / hints */
+  --e-accent: #4169e1;        /* accent — royal blue */
+  --e-accent-soft: rgba(65, 105, 225, 0.12);
   --e-danger: #e53e5a;
   --e-ok: #10b981;
   --e-warn: #f59e0b;
@@ -159,11 +203,11 @@ body {
   transition: background 0.12s, border-color 0.12s;
   white-space: nowrap; font-family: inherit; font-size: 13.5px;
 }
-.editor .btn:hover, .modal-backdrop .btn:hover { background: var(--e-bg3); border-color: #3d4356; }
+.editor .btn:hover, .modal-backdrop .btn:hover { background: var(--e-bg3); border-color: var(--e-stroke2); }
 .editor .btn:disabled, .modal-backdrop .btn:disabled { opacity: 0.45; cursor: default; }
 .editor .btn.primary, .modal-backdrop .btn.primary { background: var(--e-accent); border-color: var(--e-accent); color: #fff; font-weight: 600; }
-.editor .btn.primary:hover, .modal-backdrop .btn.primary:hover { background: #6d99ff; }
-.editor .btn.danger, .modal-backdrop .btn.danger { color: #ff8a9a; }
+.editor .btn.primary:hover, .modal-backdrop .btn.primary:hover { background: #5a7ff0; }
+.editor .btn.danger, .modal-backdrop .btn.danger { color: var(--e-danger); }
 .editor .btn.danger:hover, .modal-backdrop .btn.danger:hover { border-color: var(--e-danger); }
 .editor .btn.ghost, .modal-backdrop .btn.ghost { background: transparent; border-color: transparent; color: var(--e-muted); }
 .editor .btn.ghost:hover, .modal-backdrop .btn.ghost:hover { background: var(--e-bg2); color: var(--e-text); }
@@ -258,7 +302,7 @@ body {
 /* Stage */
 .stage { flex: 1; overflow-y: auto; overflow-x: hidden; background: var(--e-stage); position: relative; min-width: 0; scrollbar-gutter: stable; }
 .stage-inner { display: flex; flex-direction: column; align-items: center; padding: 24px 32px 60px; }
-.page-wrap { position: relative; margin-bottom: 26px; background: #fff; box-shadow: 0 3px 18px rgba(0,0,0,.55); flex: none; }
+.page-wrap { position: relative; margin-bottom: 26px; background: #fff; box-shadow: 0 4px 22px rgba(9, 20, 60, 0.45); flex: none; }
 .page-wrap canvas.pdf-canvas { display: block; position: absolute; inset: 0; }
 .page-grid { position: absolute; inset: 0; pointer-events: none; z-index: 3; background-image: linear-gradient(to right,rgba(70,110,255,.13) 1px,transparent 1px),linear-gradient(to bottom,rgba(70,110,255,.13) 1px,transparent 1px); }
 .page-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #9aa; background: #fff; z-index: 1; }
@@ -269,6 +313,30 @@ body {
 .textLayer :is(span,br) { color: transparent; position: absolute; white-space: pre; transform-origin: 0 0; }
 .textLayer.interactive span { cursor: text; }
 .textLayer ::selection { background: rgba(91,140,255,0.4); }
+
+/* Find in document */
+.search-bar {
+  position: absolute; top: 10px; right: 18px; z-index: 40;
+  display: flex; align-items: center; gap: 6px;
+  background: var(--e-bg1); border: 1px solid var(--e-stroke2);
+  border-radius: var(--e-radius-sm); padding: 6px 8px;
+  box-shadow: var(--e-shadow);
+}
+.search-bar .input { width: 200px; padding: 5px 8px; }
+.search-count { color: var(--e-muted); font-size: 12px; white-space: nowrap; min-width: 52px; text-align: center; }
+.search-hit { position: absolute; background: rgba(255, 212, 0, 0.38); border-radius: 2px; mix-blend-mode: multiply; }
+.search-hit.current { background: rgba(255, 145, 0, 0.5); outline: 1.6px solid rgba(234, 88, 12, 0.9); }
+
+/* Form field overlay (form tool) */
+.form-field {
+  border: 1.5px solid rgba(79, 108, 247, 0.55);
+  background: rgba(79, 108, 247, 0.08);
+  border-radius: 2px; padding: 0 4px; color: #111;
+  font-family: Helvetica, Arial, sans-serif; outline: none; box-sizing: border-box;
+}
+.form-field:hover { background: rgba(79, 108, 247, 0.14); }
+.form-field:focus { border-color: var(--e-accent); background: #fff; box-shadow: 0 0 0 2px var(--e-accent-soft); }
+input[type="checkbox"].form-field { accent-color: var(--e-accent); padding: 0; }
 
 /* Annotation layers */
 .annot-layer { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: visible; }
@@ -345,8 +413,8 @@ body {
 /* Light scrollbar inside editor */
 .editor ::-webkit-scrollbar { width: 11px; height: 11px; }
 .editor ::-webkit-scrollbar-track { background: transparent; }
-.editor ::-webkit-scrollbar-thumb { background: #c2cade; border-radius: 8px; border: 3px solid transparent; background-clip: content-box; }
-.editor ::-webkit-scrollbar-thumb:hover { background-color: #a0aac4; background-clip: content-box; }
+.editor ::-webkit-scrollbar-thumb { background: #aebdf2; border-radius: 8px; border: 3px solid transparent; background-clip: content-box; }
+.editor ::-webkit-scrollbar-thumb:hover { background-color: #8fa4ea; background-clip: content-box; }
 
 /* Mobile responsiveness queries */
 @media (max-width: 768px) {

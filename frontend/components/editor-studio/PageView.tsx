@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getPdfjs } from "@/lib/pdf";
 import { useEditor } from "@/lib/store";
-import type { Annot, Paragraph, Rect } from "@/lib/types";
+import type { Annot, FormField, Paragraph, Rect } from "@/lib/types";
 import { FONT_CSS, GRID_SIZE, SNAP_SIZE, snapTo, uid } from "@/lib/utils";
 import AnnotLayer from "./AnnotLayer";
 
@@ -166,9 +166,9 @@ export default function PageView({ pno }: { pno: number }) {
       st.set({ rightOpen: true, rightTab: "comments", tool: "select" });
       return;
     }
-    if (tool === "edit-text") {
-      // clicking past every block: drop the current selection; the flush
-      // tick then sweeps untouched block sessions away
+    if (tool === "edit-text" || tool === "select") {
+      // clicking past every object: drop the current selection; the flush
+      // tick then commits real edits and sweeps untouched block sessions
       if (st.selectedId || st.editingId) {
         st.set({ selectedId: null, editingId: null });
         st.scheduleFlush();
@@ -338,11 +338,81 @@ export default function PageView({ pno }: { pno: number }) {
       )}
       <div ref={textRef} className={`textLayer ${wantsTextLayer ? "interactive" : ""}`} />
 
+      {s.search.open && s.search.matches.length > 0 && (
+        <div className="annot-layer" style={{ zIndex: 5, pointerEvents: "none" }}>
+          {s.search.matches.map((m, i) =>
+            m.page === pno ? (
+              <div
+                key={i}
+                className={`search-hit ${i === s.search.index ? "current" : ""}`}
+                style={{
+                  left: m.x * zoom, top: m.y * zoom,
+                  width: m.w * zoom, height: m.h * zoom,
+                }}
+              />
+            ) : null)}
+        </div>
+      )}
+
       <AnnotLayer pno={pno} zoom={zoom} pageW={size.w} pageH={size.h} />
+
+      {s.tool === "form" && !s.previewMode && (
+        <div className="annot-layer" style={{ zIndex: 6 }}>
+          {s.formFields.map((f) =>
+            f.page === pno ? <FieldInput key={f.xref} f={f} zoom={zoom} /> : null)}
+        </div>
+      )}
 
       {gesture && <GesturePreview g={gesture} zoom={zoom} pageW={size.w} pageH={size.h} />}
       {s.pendingLink?.page === pno && <LinkPopover zoom={zoom} />}
     </div>
+  );
+}
+
+/* ---------------- form field overlay (form tool) ---------------- */
+
+function FieldInput({ f, zoom }: { f: FormField; zoom: number }) {
+  const s = useEditor();
+  const val = s.formDraft[f.xref] ?? f.value;
+  const base: React.CSSProperties = {
+    position: "absolute",
+    left: f.x * zoom, top: f.y * zoom,
+    width: f.w * zoom, height: f.h * zoom,
+    pointerEvents: "auto",
+  };
+  const stop = (e: React.PointerEvent) => e.stopPropagation();
+
+  if (f.type === "checkbox") {
+    return (
+      <input
+        type="checkbox" className="form-field hit" style={base}
+        checked={Boolean(val)} title={f.name}
+        onPointerDown={stop}
+        onChange={(e) => s.setFieldDraft(f.xref, e.target.checked)}
+      />
+    );
+  }
+  if (f.type === "choice") {
+    return (
+      <select
+        className="form-field hit" style={{ ...base, fontSize: Math.max(9, (f.fontSize || 11) * zoom) }}
+        value={String(val)} title={f.name}
+        onPointerDown={stop}
+        onChange={(e) => s.setFieldDraft(f.xref, e.target.value)}
+      >
+        {!f.options.includes(String(val)) && <option value={String(val)}>{String(val)}</option>}
+        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      className="form-field hit"
+      style={{ ...base, fontSize: Math.max(9, (f.fontSize || 11) * zoom) }}
+      value={String(val)} title={f.name} placeholder={f.name}
+      onPointerDown={stop}
+      onChange={(e) => s.setFieldDraft(f.xref, e.target.value)}
+    />
   );
 }
 

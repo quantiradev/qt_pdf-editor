@@ -9,6 +9,7 @@ Application: tight per-line redaction (no neighbour bleed) followed by a
 Everything is in PDF points, top-left origin (same convention as pdf_ops).
 """
 import hashlib
+import math
 import os
 import re
 import threading
@@ -40,6 +41,19 @@ _CROSS_BLOCK_GAP = 2.6       # max horizontal gap for same-line block merge, * s
 _PARA_GAP_FACTOR = 1.65      # vertical split when baseline delta exceeds * leading
 _REDACT_INSET_V = 0.75       # pt shaved off line rect top+bottom before redacting
 _MIN_SIZE = 4.0
+
+
+def num(v, default: float = 0.0) -> float:
+    """Tolerant float for wire values: None/garbage/NaN become `default`.
+
+    JavaScript NaN serializes to JSON null, so any client-side arithmetic bug
+    arrives here as None — the bake must degrade, never crash on it.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return float(default)
+    return f if math.isfinite(f) else float(default)
 
 
 def _flags_style(font: str, flags: int) -> tuple[str, bool, bool]:
@@ -1061,11 +1075,11 @@ def split_block_ops(doc: fitz.Document, pno: int, blocks: list[dict]
         if p is None:
             raise ValueError("The text block changed on disk — reload and retry")
         r = p.bbox
-        same_geom = (abs(float(b.get("x", r.x0)) - r.x0) < 0.5
-                     and abs(float(b.get("y", r.y0)) - r.y0) < 0.5
-                     and abs(float(b.get("w", r.width)) - r.width) < 0.5)
+        same_geom = (abs(num(b.get("x"), r.x0) - r.x0) < 0.5
+                     and abs(num(b.get("y"), r.y0) - r.y0) < 0.5
+                     and abs(num(b.get("w"), r.width) - r.width) < 0.5)
         text = str(b.get("text", ""))
-        if same_geom and _near_zero_angle(float(b.get("rotate", 0.0))):
+        if same_geom and _near_zero_angle(num(b.get("rotate"), 0.0)):
             if text == p.text:
                 continue  # nothing changed at all
             reflow.append({"paraId": b["paraId"], "text": text})
@@ -1101,17 +1115,17 @@ def apply_block_ops(doc: fitz.Document, pno: int, blocks: list[dict],
             continue  # emptied text = delete the block
 
         r = p.bbox
-        x = float(b.get("x", r.x0))
-        y = float(b.get("y", r.y0))
-        w = max(20.0, float(b.get("w", r.width)))
+        x = num(b.get("x"), r.x0)
+        y = num(b.get("y"), r.y0)
+        w = max(20.0, num(b.get("w"), r.width))
         ops = _build_box_ops(page, p, text, pool, x, y, w)
         if not ops:
             continue
 
         morph = None
-        rotate = float(b.get("rotate", 0.0)) % 360.0
+        rotate = num(b.get("rotate"), 0.0) % 360.0
         if not _near_zero_angle(rotate):
-            h = float(b.get("h", 0.0)) or \
+            h = num(b.get("h"), 0.0) or \
                 (ops[-1].baseline - ops[0].baseline + ops[0].leading)
             # the wire angle is CSS convention (clockwise-positive, y down);
             # fitz.Matrix rotates the opposite way in that view

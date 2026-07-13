@@ -1,19 +1,20 @@
 "use client";
 import {
-  ArrowUpRight, Bold, Circle, Highlighter, Image as ImageIcon, Italic, Link2,
-  Minus, MousePointer2, Pencil, PenTool, Square, StickyNote, Strikethrough,
-  TextCursorInput, Type, Underline as UnderlineIcon,
+  ArrowUpRight, Bold, Circle, FormInput, Highlighter, Image as ImageIcon,
+  Italic, Link2, Minus, MousePointer2, Pencil, PenTool, Square, StickyNote,
+  Strikethrough, TextCursorInput, Type, Underline as UnderlineIcon,
 } from "lucide-react";
 import { useRef } from "react";
 import { useEditor } from "@/lib/store";
-import type { ImageAnnot, Tool } from "@/lib/types";
+import type { Tool } from "@/lib/types";
 import {
-  HIGHLIGHT_COLORS, NOTE_COLORS, STROKE_COLORS, TEXT_COLORS, uid,
+  HIGHLIGHT_COLORS, NOTE_COLORS, STROKE_COLORS, TEXT_COLORS,
 } from "@/lib/utils";
 
 const TOOLS: { tool: Tool; icon: React.ReactNode; label: string; key: string }[] = [
   { tool: "select", icon: <MousePointer2 size={17} />, label: "Select / move", key: "V" },
   { tool: "edit-text", icon: <TextCursorInput size={17} />, label: "Edit text blocks — move, resize, rotate, retype", key: "E" },
+  { tool: "form", icon: <FormInput size={17} />, label: "Fill form fields", key: "F" },
   { tool: "text", icon: <Type size={17} />, label: "Add text box", key: "T" },
   { tool: "highlight", icon: <Highlighter size={17} />, label: "Highlight text", key: "H" },
   { tool: "underline", icon: <UnderlineIcon size={17} />, label: "Underline text", key: "U" },
@@ -39,28 +40,8 @@ export default function Toolbar() {
 
   const onImageChosen = (file: File) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const src = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
-        const st = useEditor.getState();
-        const page = st.currentPage;
-        const size = st.pageSizes[page] ?? { w: 612, h: 792 };
-        const maxW = size.w * 0.5;
-        const scale = Math.min(1, maxW / img.naturalWidth);
-        const w = Math.max(24, img.naturalWidth * scale);
-        const h = Math.max(24, img.naturalHeight * scale);
-        const annot: ImageAnnot = {
-          id: uid(), page, type: "image",
-          x: (size.w - w) / 2, y: (size.h - h) / 2, w, h,
-          src, rotate: 0,
-        };
-        st.addAnnot(annot);
-        st.set({ tool: "select" });
-        st.toast("Image placed — drag to position it", "info");
-      };
-      img.src = src;
-    };
+    reader.onload = () =>
+      useEditor.getState().placeImage(reader.result as string);
     reader.readAsDataURL(file);
   };
 
@@ -73,7 +54,12 @@ export default function Toolbar() {
             title={key ? `${label} (${key})` : label}
             onClick={() => {
               if (tool === "image") { s.setTool("image"); pickImage(); }
-              else s.setTool(tool);
+              else if (tool === "sign") s.set({ modal: "sign" });
+              else {
+                if (tool === "form" && !s.formFields.length)
+                  s.toast("This document has no fillable form fields", "info");
+                s.setTool(tool);
+              }
             }}
           >
             {icon}
@@ -163,6 +149,29 @@ function ContextStrip() {
   switch (s.tool) {
     case "select":
       return <div className="ctx-strip"><span className="cs-label">Click an object to select it · drag to move · Delete to remove</span></div>;
+    case "form": {
+      const pending = Object.entries(s.formDraft).filter(([xref, v]) =>
+        s.formFields.some((f) => f.xref === Number(xref) && f.value !== v)).length;
+      return (
+        <div className="ctx-strip">
+          <span className="cs-label">
+            {s.formFields.length
+              ? `${s.formFields.length} form field${s.formFields.length > 1 ? "s" : ""} — click one to fill it`
+              : "This document has no fillable form fields"}
+          </span>
+          {pending > 0 && (
+            <>
+              <span className="cs-label" style={{ color: "var(--warn)" }}>
+                {pending} unsaved change{pending > 1 ? "s" : ""}
+              </span>
+              <button className="btn small primary" onClick={() => s.applyFields()}>
+                Save fields to PDF
+              </button>
+            </>
+          )}
+        </div>
+      );
+    }
     case "edit-text":
       return (
         <div className="ctx-strip">

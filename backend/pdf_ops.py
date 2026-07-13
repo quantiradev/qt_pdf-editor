@@ -99,7 +99,17 @@ def page_count(data: bytes) -> int:
 
 # ---------------------------------------------------------------- annotations
 
+_num = text_engine.num  # tolerant float: None/NaN/garbage -> default
+
+
+def _finite(*vals) -> bool:
+    return all(isinstance(v, (int, float)) and math.isfinite(float(v))
+               for v in vals)
+
+
 def _rect(a: dict) -> fitz.Rect:
+    if not _finite(a.get("x"), a.get("y"), a.get("w"), a.get("h")):
+        raise ValueError("invalid geometry")
     return fitz.Rect(a["x"], a["y"], a["x"] + a["w"], a["y"] + a["h"])
 
 
@@ -133,8 +143,8 @@ def _apply_text(page: fitz.Page, a: dict):
     _insert_textbox_fit(
         page, rect, a.get("text", ""),
         font=fontname(a.get("fontFamily", "helv"), a.get("bold"), a.get("italic")),
-        size=float(a.get("fontSize", 14)),
-        color=hex2rgb(a.get("color", "#000000")),
+        size=max(4.0, _num(a.get("fontSize"), 14)),
+        color=hex2rgb(a.get("color") or "#000000"),
         align=ALIGN.get(a.get("align", "left"), 0),
     )
     if a.get("url"):
@@ -143,7 +153,8 @@ def _apply_text(page: fitz.Page, a: dict):
 
 def _apply_markup(page: fitz.Page, a: dict):
     rects = [fitz.Rect(r["x"], r["y"], r["x"] + r["w"], r["y"] + r["h"])
-             for r in a.get("rects", [])]
+             for r in a.get("rects", [])
+             if _finite(r.get("x"), r.get("y"), r.get("w"), r.get("h"))]
     rects = [r for r in rects if not r.is_empty]
     if not rects:
         return
@@ -151,38 +162,41 @@ def _apply_markup(page: fitz.Page, a: dict):
     kind = a["type"]
     if kind == "highlight":
         annot = page.add_highlight_annot(quads=quads)
-        annot.set_opacity(float(a.get("opacity", 0.45)))
+        annot.set_opacity(_num(a.get("opacity"), 0.45))
     elif kind == "underline":
         annot = page.add_underline_annot(quads=quads)
     else:
         annot = page.add_strikeout_annot(quads=quads)
-    annot.set_colors(stroke=hex2rgb(a.get("color", "#ffd400")))
+    annot.set_colors(stroke=hex2rgb(a.get("color") or "#ffd400"))
     annot.update()
 
 
 def _apply_ink(page: fitz.Page, a: dict):
-    pts = [(float(p[0]), float(p[1])) for p in a.get("points", [])]
+    pts = [(float(p[0]), float(p[1])) for p in a.get("points", [])
+           if isinstance(p, (list, tuple)) and len(p) == 2 and _finite(p[0], p[1])]
     if len(pts) < 2:
         return
     annot = page.add_ink_annot([pts])
-    annot.set_colors(stroke=hex2rgb(a.get("color", "#e11d48")))
-    annot.set_border(width=float(a.get("width", 2)))
-    annot.set_opacity(float(a.get("opacity", 1)))
+    annot.set_colors(stroke=hex2rgb(a.get("color") or "#e11d48"))
+    annot.set_border(width=max(0.2, _num(a.get("width"), 2)))
+    annot.set_opacity(_num(a.get("opacity"), 1))
     annot.update()
 
 
 def _apply_shape(page: fitz.Page, a: dict):
     shape = page.new_shape()
-    stroke = hex2rgb(a.get("stroke", "#e11d48"))
+    stroke = hex2rgb(a.get("stroke") or "#e11d48")
     fill = hex2rgb(a["fill"]) if a.get("fill") else None
-    width = float(a.get("strokeWidth", 2))
-    opacity = float(a.get("opacity", 1))
+    width = max(0.2, _num(a.get("strokeWidth"), 2))
+    opacity = _num(a.get("opacity"), 1)
     kind = a["type"]
     if kind == "rect":
         shape.draw_rect(_rect(a))
     elif kind == "ellipse":
         shape.draw_oval(_rect(a))
     elif kind in ("line", "arrow"):
+        if not _finite(a.get("x1"), a.get("y1"), a.get("x2"), a.get("y2")):
+            raise ValueError("invalid geometry")
         p1 = fitz.Point(a["x1"], a["y1"])
         p2 = fitz.Point(a["x2"], a["y2"])
         shape.draw_line(p1, p2)
@@ -208,16 +222,18 @@ def _apply_image(page: fitz.Page, a: dict):
     src += "=" * ((4 - len(src) % 4) % 4)
     data = base64.b64decode(src)
     rect = _rect(a)
-    page.insert_image(rect, stream=data, rotate=int(a.get("rotate", 0)) % 360,
+    page.insert_image(rect, stream=data, rotate=int(_num(a.get("rotate"), 0)) % 360,
                       keep_proportion=False, overlay=True)
     if a.get("url"):
         page.insert_link({"kind": fitz.LINK_URI, "from": rect, "uri": a["url"]})
 
 
 def _apply_note(page: fitz.Page, a: dict):
+    if not _finite(a.get("x"), a.get("y")):
+        raise ValueError("invalid geometry")
     annot = page.add_text_annot(fitz.Point(a["x"], a["y"]),
                                 a.get("text", ""), icon="Comment")
-    annot.set_colors(stroke=hex2rgb(a.get("color", "#ffd400")))
+    annot.set_colors(stroke=hex2rgb(a.get("color") or "#ffd400"))
     annot.update()
 
 
@@ -253,8 +269,8 @@ def bake_annotations(path: Path, annotations: list[dict]) -> tuple[list[str], li
     doc = fitz.open(str(path))
     by_page: dict[int, list[dict]] = {}
     for a in annotations:
-        pno = int(a.get("page", 0))
-        if 0 <= pno < doc.page_count:
+        pno = int(_num(a.get("page"), -1))
+        if 0 <= pno < doc.page_count and a.get("type"):
             by_page.setdefault(pno, []).append(a)
 
     pool = text_engine.FontPool(doc)
@@ -266,8 +282,8 @@ def bake_annotations(path: Path, annotations: list[dict]) -> tuple[list[str], li
         #    redact in place and redraw elsewhere without shifting the page.
         #    A block op whose geometry is untouched is really a plain rewrite
         #    and is folded into the reflow pass below instead.
-        edits = [a for a in items if a["type"] == "textedit"]
-        blocks = [a for a in items if a["type"] == "textblock"]
+        edits = [a for a in items if a.get("type") == "textedit"]
+        blocks = [a for a in items if a.get("type") == "textblock"]
         if blocks:
             reflow, free = text_engine.split_block_ops(doc, pno, blocks)
             edits = reflow + edits
@@ -282,12 +298,20 @@ def bake_annotations(path: Path, annotations: list[dict]) -> tuple[list[str], li
             warnings += w
             changed |= ch
         # 3) everything else in creation order (page fetched after the
-        #    edits: a reflow may have appended pages to the document)
+        #    edits: a reflow may have appended pages to the document).
+        #    One malformed object must not fail the whole batch — skip it
+        #    and tell the user, otherwise the client queue can never drain.
         page = doc[pno]
         for a in items:
             fn = APPLIERS.get(a["type"])
-            if fn:
+            if not fn:
+                continue
+            try:
                 fn(page, a)
+            except Exception as exc:
+                warnings.append(
+                    f"Page {pno + 1}: skipped one {a['type']} object "
+                    f"({exc})")
 
     pool.finalize()
     _save_over(doc, path)
@@ -323,6 +347,78 @@ def add_watermark(path: Path, *, text: str, color: str, opacity: float,
                          color=rgb, fill_opacity=opacity, overlay=True,
                          morph=(center, matrix))
     _save_over(doc, path)
+
+
+# ---------------------------------------------------------------- forms
+
+_WIDGET_KINDS = {}          # filled lazily: fitz constants -> wire names
+
+
+def _widget_kind(ftype: int) -> str | None:
+    if not _WIDGET_KINDS:
+        _WIDGET_KINDS.update({
+            fitz.PDF_WIDGET_TYPE_TEXT: "text",
+            fitz.PDF_WIDGET_TYPE_CHECKBOX: "checkbox",
+            fitz.PDF_WIDGET_TYPE_COMBOBOX: "choice",
+            fitz.PDF_WIDGET_TYPE_LISTBOX: "choice",
+        })
+    return _WIDGET_KINDS.get(ftype)
+
+
+def list_form_fields(path: Path) -> list[dict]:
+    """All fillable AcroForm widgets (text, checkbox, combo/list boxes).
+
+    Coordinates are page points, top-left origin, like everything else.
+    """
+    # ponytail: radio groups and signature widgets are skipped — add radio
+    # via widget.on_state() if documents with radio forms show up
+    doc = fitz.open(str(path))
+    try:
+        out = []
+        for pno in range(doc.page_count):
+            for w in doc[pno].widgets() or []:
+                kind = _widget_kind(w.field_type)
+                if kind is None:
+                    continue
+                r = w.rect
+                value = w.field_value
+                if kind == "checkbox":
+                    value = value not in (None, "", "Off", False)
+                out.append({
+                    "xref": w.xref,
+                    "name": w.field_name or f"field-{w.xref}",
+                    "page": pno,
+                    "x": r.x0, "y": r.y0, "w": r.width, "h": r.height,
+                    "type": kind,
+                    "value": value if value is not None else "",
+                    "options": (w.choice_values or []) if kind == "choice" else [],
+                    "fontSize": w.text_fontsize or 0,
+                })
+        return out
+    finally:
+        doc.close()
+
+
+def set_form_fields(path: Path, values: dict[int, object]) -> int:
+    """Set widget values by xref. Returns how many fields were updated."""
+    doc = fitz.open(str(path))
+    n = 0
+    for pno in range(doc.page_count):
+        for w in doc[pno].widgets() or []:
+            if w.xref not in values or _widget_kind(w.field_type) is None:
+                continue
+            v = values[w.xref]
+            if w.field_type == fitz.PDF_WIDGET_TYPE_CHECKBOX:
+                w.field_value = bool(v)
+            else:
+                w.field_value = "" if v is None else str(v)
+            w.update()
+            n += 1
+    if n:
+        _save_over(doc, path)
+    else:
+        doc.close()
+    return n
 
 
 # ---------------------------------------------------------------- reading
@@ -439,6 +535,17 @@ def delete_pages(path: Path, pages: list[int]) -> int:
         doc.close()
         raise ValueError("Cannot delete every page of the document")
     doc.delete_pages(keep)
+    n = doc.page_count
+    _save_over(doc, path)
+    return n
+
+
+def insert_blank_page(path: Path, after: int) -> int:
+    """Insert one blank page after 0-based index `after` (-1 = at the front).
+    The new page copies the size of the page it follows (or page 1)."""
+    doc = fitz.open(str(path))
+    ref = doc[max(0, min(doc.page_count - 1, after))]
+    doc.new_page(pno=after + 1, width=ref.rect.width, height=ref.rect.height)
     n = doc.page_count
     _save_over(doc, path)
     return n

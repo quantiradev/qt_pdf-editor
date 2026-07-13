@@ -1,6 +1,7 @@
 export type Tool =
   | "select"
   | "edit-text"
+  | "form"
   | "text"
   | "highlight"
   | "underline"
@@ -179,6 +180,22 @@ export interface BakedNote {
 export interface PageSize {
   w: number;
   h: number;
+}
+
+/** One find-in-document hit, in page points (top-left origin). */
+export interface SearchMatch extends Rect {
+  page: number;
+}
+
+/** One fillable AcroForm widget as reported by the backend. */
+export interface FormField extends Rect {
+  xref: number;
+  name: string;
+  page: number;
+  type: "text" | "checkbox" | "choice";
+  value: string | boolean;
+  options: string[];
+  fontSize: number;
 }
 
 export interface ToolOpts {

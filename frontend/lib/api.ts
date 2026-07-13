@@ -1,4 +1,6 @@
-import type { Annot, BakedNote, FileMeta, OutlineItem, Paragraph } from "./types";
+import type {
+  Annot, BakedNote, FileMeta, FormField, OutlineItem, Paragraph,
+} from "./types";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -45,6 +47,10 @@ export const api = {
   paragraphs: (id: string, page: number) =>
     req<Paragraph[]>(`/api/files/${id}/paragraphs?page=${page}`),
 
+  fields: (id: string) => req<FormField[]>(`/api/files/${id}/fields`),
+  setFields: (id: string, values: { xref: number; value: string | boolean }[]) =>
+    req<FileMeta>(`/api/files/${id}/fields`, json({ values })),
+
   notes: (id: string) => req<BakedNote[]>(`/api/files/${id}/notes`),
   editNote: (id: string, xref: number, text: string) =>
     req<FileMeta>(`/api/files/${id}/notes/${xref}`, { ...json({ text }), method: "PATCH" }),
@@ -69,6 +75,8 @@ export const api = {
     req<FileMeta>(`/api/files/${id}/pages/delete`, json({ pages })),
   duplicatePages: (id: string, pages: number[]) =>
     req<FileMeta>(`/api/files/${id}/pages/duplicate`, json({ pages })),
+  insertPage: (id: string, after: number) =>
+    req<FileMeta>(`/api/files/${id}/pages/insert`, json({ after })),
   reorderPages: (id: string, order: number[]) =>
     req<FileMeta>(`/api/files/${id}/pages/reorder`, json({ order })),
   extractPages: (id: string, pages: number[], name?: string) =>

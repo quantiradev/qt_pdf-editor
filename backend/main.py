@@ -310,6 +310,37 @@ def remove_note(file_id: str, xref: int):
         return storage.public(storage.update(file_id, bump_version=True))
 
 
+# ------------------------------------------------------------ form fields
+
+@app.get("/api/files/{file_id}/fields")
+def form_fields(file_id: str):
+    _meta_or_404(file_id)
+    return pdf_ops.list_form_fields(storage.path_for(file_id))
+
+
+class FieldValue(BaseModel):
+    xref: int
+    value: str | bool | None = None
+
+
+class FieldsBody(BaseModel):
+    values: list[FieldValue]
+
+
+@app.post("/api/files/{file_id}/fields")
+def set_form_fields(file_id: str, body: FieldsBody):
+    _meta_or_404(file_id)
+    if not body.values:
+        raise HTTPException(400, "No field values supplied")
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        n = pdf_ops.set_form_fields(
+            storage.path_for(file_id), {f.xref: f.value for f in body.values})
+        if not n:
+            raise HTTPException(404, "No matching form fields in this document")
+        return storage.public(storage.update(file_id, bump_version=True))
+
+
 # ------------------------------------------------------------ save edits
 
 class AnnotationsBody(BaseModel):
@@ -431,6 +462,21 @@ def remove_pages(file_id: str, body: PagesBody):
             pdf_ops.delete_pages(storage.path_for(file_id), body.pages)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+        return _bumped(file_id)
+
+
+class InsertPageBody(BaseModel):
+    after: int = -1  # 0-based page the blank page goes after; -1 = at the front
+
+
+@app.post("/api/files/{file_id}/pages/insert")
+def insert_page(file_id: str, body: InsertPageBody):
+    meta = _meta_or_404(file_id)
+    if not (-1 <= body.after < meta["pages"]):
+        raise HTTPException(400, "Insert position is out of range")
+    with storage.op_lock(file_id):
+        storage.snapshot_before_change(file_id)
+        pdf_ops.insert_blank_page(storage.path_for(file_id), body.after)
         return _bumped(file_id)
 
 
