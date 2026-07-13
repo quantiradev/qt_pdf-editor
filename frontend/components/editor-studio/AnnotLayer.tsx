@@ -1,6 +1,6 @@
 "use client";
 import { StickyNote } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { isPristineBlock, useEditor } from "@/lib/store";
 import type { Annot, TextBlockAnnot } from "@/lib/types";
 import { FONT_CSS, SNAP_SIZE, clamp, inkBBox, pointsToPath, snapTo, uid } from "@/lib/utils";
@@ -203,12 +203,13 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
       {/* masks: a floating block leaves a blank where its paragraph was */}
       {annots.map((a) =>
         a.type === "textblock" && (s.editingId === a.id || !isPristineBlock(a)) ? (
-          <div
-            key={`mask-${a.id}`} className="tb-mask"
-            style={{
-              left: (a.orig.x - 1.5) * zoom, top: (a.orig.y - 1) * zoom,
-              width: (a.orig.w + 3) * zoom, height: (a.orig.h + 2) * zoom,
-            }}
+          <MaskBlock
+            key={`mask-${a.id}`}
+            a={a as TextBlockAnnot}
+            pno={pno}
+            pageW={pageW}
+            pageH={pageH}
+            zoom={zoom}
           />
         ) : null)}
 
@@ -405,6 +406,7 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         onPointerDown={(e) => selectable && startDrag(e, a, "move")}
         onDoubleClick={(e) => {
           e.stopPropagation();
+          s.snapshot();
           s.set({ editingId: a.id, selectedId: a.id });
         }}
         title="Double-click to edit text"
@@ -624,7 +626,7 @@ function TextEditorOverlay({ a, style }: {
       s.updateAnnot(a.id, {
         text: v,
         h: Math.max(a.h, lines * a.fontSize * 1.3 + 4),
-      } as any, true);
+      } as any, false);
     }
     s.set({ editingId: null });
   };
@@ -634,6 +636,14 @@ function TextEditorOverlay({ a, style }: {
       ref={ref}
       className="annot-text-editor"
       defaultValue={a.text}
+      onChange={(e) => {
+        const v = e.target.value;
+        const lines = v.split("\n").length;
+        s.updateAnnot(a.id, {
+          text: v,
+          h: Math.max(a.h, lines * a.fontSize * 1.3 + 4),
+        } as any, false);
+      }}
       style={{
         ...style,
         height: Math.max((style.minHeight as number) ?? 24, 24),
@@ -776,3 +786,72 @@ function BlockSelection({ a, zoom, startDrag }: {
     </div>
   );
 }
+
+/* ------------------------------------------------ MaskBlock background color sampler */
+
+function MaskBlock({ a, pno, pageW, pageH, zoom }: {
+  a: TextBlockAnnot; pno: number; pageW: number; pageH: number; zoom: number;
+}) {
+  const [bgColor, setBgColor] = useState("transparent");
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const wrap = document.querySelector(`[data-pno="${pno}"]`);
+        const canvas = wrap?.querySelector("canvas") as HTMLCanvasElement | null;
+        if (!canvas) return;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (!ctx) return;
+
+        // Map page coords to canvas pixel bitmap coords
+        const scaleX = canvas.width / pageW;
+        const scaleY = canvas.height / pageH;
+
+        // Sample slightly outside the corners where there is no text
+        const points = [
+          { x: a.orig.x - 2, y: a.orig.y - 2 },
+          { x: a.orig.x + a.orig.w + 2, y: a.orig.y - 2 },
+          { x: a.orig.x - 2, y: a.orig.y + a.orig.h + 2 },
+        ];
+
+        const colors: { r: number; g: number; b: number }[] = [];
+        for (const pt of points) {
+          const sx = Math.max(0, Math.min(canvas.width - 1, Math.floor(pt.x * scaleX)));
+          const sy = Math.max(0, Math.min(canvas.height - 1, Math.floor(pt.y * scaleY)));
+          const imgData = ctx.getImageData(sx, sy, 1, 1);
+          const data = imgData.data;
+          // Only use if the pixel is fully opaque
+          if (data[3] === 255) {
+            colors.push({ r: data[0], g: data[1], b: data[2] });
+          }
+        }
+
+        if (colors.length > 0) {
+          // Take the average of the sampled background colors
+          const avgR = Math.round(colors.reduce((sum, c) => sum + c.r, 0) / colors.length);
+          const avgG = Math.round(colors.reduce((sum, c) => sum + c.g, 0) / colors.length);
+          const avgB = Math.round(colors.reduce((sum, c) => sum + c.b, 0) / colors.length);
+          setBgColor(`rgb(${avgR}, ${avgG}, ${avgB})`);
+        }
+      } catch (e) {
+        console.warn("Could not sample background color:", e);
+      }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [pno, pageW, pageH, a.orig.x, a.orig.y, a.orig.w, a.orig.h]);
+
+  return (
+    <div
+      className="tb-mask"
+      style={{
+        position: "absolute",
+        left: (a.orig.x - 1.5) * zoom,
+        top: (a.orig.y - 1) * zoom,
+        width: (a.orig.w + 3) * zoom,
+        height: (a.orig.h + 2) * zoom,
+        backgroundColor: bgColor,
+      }}
+    />
+  );
+}
+
