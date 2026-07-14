@@ -298,5 +298,24 @@
     "updated_at": 1784005219.947757,
     "opened_at": 1784005219.9467578,
     "deleted": false
+  },
+  "153b582ca683": {
+    "id": "153b582ca683",
+    "name": "resume.pdf",
+    "size": 162558,
+    "pages": 1,
+    "version": 8,
+    "created_at": 1784007608.2133114,
+    "updated_at": 1784007689.7951412,
+    "opened_at": 1784007615.4500778,
+    "deleted": false,
+    "undo": [
+      "153b582ca683-3-4aa8f0.pdf",
+      "153b582ca683-4-375b81.pdf",
+      "153b582ca683-5-293895.pdf",
+      "153b582ca683-6-e4a9a7.pdf",
+      "153b582ca683-7-6a64e7.pdf"
+    ],
+    "redo": []
   }
 }

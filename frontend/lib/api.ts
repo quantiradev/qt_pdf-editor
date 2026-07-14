@@ -1,20 +1,15 @@
-<<<<<<< HEAD
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
-import type { Annot, BakedNote, FileMeta, OutlineItem, TextBlock } from "./types";
-=======
 import type {
   Annot, BakedNote, FileMeta, FormField, OutlineItem, Paragraph,
 } from "./types";
->>>>>>> sprint1
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_URL}${url}`, init);
+  const res = await fetch(url, init);
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
     try {
       const body = await res.json();
       if (body?.detail) msg = typeof body.detail === "string" ? body.detail : msg;
-    } catch {}
+    } catch { }
     throw new Error(msg);
   }
   return res.json();
@@ -46,8 +41,7 @@ export const api = {
   restore: (id: string) =>
     req<{ ok: boolean }>(`/api/files/${id}/restore`, { method: "POST" }),
 
-  contentUrl: (id: string, version: number) =>
-  `${API_URL}/api/files/${id}/content?v=${version}`,
+  contentUrl: (id: string, version: number) => `/api/files/${id}/content?v=${version}`,
 
   outline: (id: string) => req<OutlineItem[]>(`/api/files/${id}/outline`),
   paragraphs: (id: string, page: number) =>
@@ -94,11 +88,11 @@ export const api = {
 
   exportBlob: async (id: string, format: string, pages: string, dpi: number) => {
     const res = await fetch(
-  `${API_URL}/api/files/${id}/export?format=${format}&pages=${encodeURIComponent(pages)}&dpi=${dpi}`
-);
+      `/api/files/${id}/export?format=${format}&pages=${encodeURIComponent(pages)}&dpi=${dpi}`
+    );
     if (!res.ok) {
       let msg = `${res.status}`;
-      try { msg = (await res.json()).detail ?? msg; } catch {}
+      try { msg = (await res.json()).detail ?? msg; } catch { }
       throw new Error(msg);
     }
     const dispo = res.headers.get("Content-Disposition") ?? "";
@@ -106,6 +100,5 @@ export const api = {
     return { blob: await res.blob(), name: m?.[1] ?? `export.${format}` };
   },
 
-  downloadUrl: (id: string) =>
-  `${API_URL}/api/files/${id}/download`,
+  downloadUrl: (id: string) => `/api/files/${id}/download`,
 };
