@@ -1,6 +1,6 @@
 "use client";
 import {
-  Copy, FilePlus2, ListTree, RotateCcw, RotateCw, Trash2,
+  Copy, FilePlus2, ListTree, Plus, RotateCcw, RotateCw, Trash2,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
@@ -89,6 +89,9 @@ function PagesTab() {
         s.toast(`Extract failed: ${e.message}`, "error");
       }
     },
+    insertBlank: () =>
+      s.runOp("Inserting page", () =>
+        api.insertPage(s.fileId!, Math.max(...targets))),
   };
 
   useEffect(() => {
@@ -104,13 +107,16 @@ function PagesTab() {
 
   return (
     <>
-      <div className="page-ops-bar">
-        <button className="icon-btn" title="Rotate left 90°" onClick={() => op.rotate(-90)}><RotateCcw size={15} /></button>
-        <button className="icon-btn" title="Rotate right 90°" onClick={() => op.rotate(90)}><RotateCw size={15} /></button>
-        <button className="icon-btn" title="Duplicate page(s)" onClick={op.duplicate}><Copy size={15} /></button>
-        <button className="icon-btn" title="Extract page(s) to a new PDF" onClick={op.extract}><FilePlus2 size={15} /></button>
-        <button className="icon-btn" title="Delete page(s)" onClick={op.remove}><Trash2 size={15} /></button>
-      </div>
+      {!s.previewMode && (
+        <div className="page-ops-bar">
+          <button className="icon-btn" title="Rotate left 90°" onClick={() => op.rotate(-90)}><RotateCcw size={15} /></button>
+          <button className="icon-btn" title="Rotate right 90°" onClick={() => op.rotate(90)}><RotateCw size={15} /></button>
+          <button className="icon-btn" title="Insert blank page after" onClick={op.insertBlank}><Plus size={15} /></button>
+          <button className="icon-btn" title="Duplicate page(s)" onClick={op.duplicate}><Copy size={15} /></button>
+          <button className="icon-btn" title="Extract page(s) to a new PDF" onClick={op.extract}><FilePlus2 size={15} /></button>
+          <button className="icon-btn" title="Delete page(s)" onClick={op.remove}><Trash2 size={15} /></button>
+        </div>
+      )}
       <div className="side-body">
         {Array.from({ length: pages }, (_, pno) => (
           <div
@@ -121,24 +127,31 @@ function PagesTab() {
               s.currentPage === pno ? "current" : "",
               dragOver?.pno === pno ? (dragOver.after ? "drag-over-bottom" : "drag-over-top") : "",
             ].join(" ")}
-            draggable
+            draggable={!s.previewMode}
             onClick={(e) => clickThumb(pno, e)}
             onContextMenu={(e) => {
               e.preventDefault();
+              if (s.previewMode) return;
               if (!sel.includes(pno)) s.set({ selectedPages: [pno] });
               setMenu({ x: e.clientX, y: e.clientY });
             }}
             onDragStart={(e) => {
+              if (s.previewMode) return;
               dragFrom.current = pno;
               e.dataTransfer.effectAllowed = "move";
             }}
             onDragOver={(e) => {
+              if (s.previewMode) return;
               e.preventDefault();
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               setDragOver({ pno, after: e.clientY > rect.top + rect.height / 2 });
             }}
-            onDragLeave={() => setDragOver((d) => (d?.pno === pno ? null : d))}
+            onDragLeave={() => {
+              if (s.previewMode) return;
+              setDragOver((d) => (d?.pno === pno ? null : d));
+            }}
             onDrop={(e) => {
+              if (s.previewMode) return;
               e.preventDefault();
               const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
               drop(pno, e.clientY > rect.top + rect.height / 2);
@@ -154,6 +167,7 @@ function PagesTab() {
         <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
           <button onClick={() => op.rotate(-90)}><RotateCcw size={15} /> Rotate left</button>
           <button onClick={() => op.rotate(90)}><RotateCw size={15} /> Rotate right</button>
+          <button onClick={op.insertBlank}><Plus size={15} /> Insert blank page after</button>
           <button onClick={op.duplicate}><Copy size={15} /> Duplicate</button>
           <button onClick={op.extract}><FilePlus2 size={15} /> Extract to new PDF</button>
           <hr />
@@ -167,7 +181,7 @@ function PagesTab() {
 const THUMB_W = 158;
 
 function Thumb({ pno }: { pno: number }) {
-  const doc = useEditor((s) => s.doc);
+  const epoch = useEditor((s) => s.pageEpochs[pno] ?? 0);
   const size = useEditor((s) => s.pageSizes[pno]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -175,6 +189,8 @@ function Thumb({ pno }: { pno: number }) {
     let cancelled = false;
     let task: any = null;
     (async () => {
+      // read the latest doc at render time; the epoch dep decides *when*
+      const doc = useEditor.getState().doc;
       if (!doc || !canvasRef.current) return;
       try {
         const page = await doc.getPage(pno + 1);
@@ -199,7 +215,7 @@ function Thumb({ pno }: { pno: number }) {
       } catch {}
     })();
     return () => { cancelled = true; task?.cancel?.(); };
-  }, [doc, pno]);
+  }, [epoch, pno]);
 
   const ratio = size ? size.h / size.w : 1.3;
   return <canvas ref={canvasRef} style={{ width: "100%", aspectRatio: `1 / ${ratio}` }} />;

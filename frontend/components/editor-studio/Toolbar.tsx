@@ -1,19 +1,20 @@
 "use client";
 import {
-  ArrowUpRight, Bold, Circle, Highlighter, Image as ImageIcon, Italic, Link2,
-  Minus, MousePointer2, Pencil, Square, StickyNote, Strikethrough,
-  TextCursorInput, Type, Underline as UnderlineIcon,
+  ArrowUpRight, Bold, Circle, FormInput, Highlighter, Image as ImageIcon,
+  Italic, Link2, Minus, MousePointer2, Pencil, PenTool, Square, StickyNote,
+  Strikethrough, TextCursorInput, Type, Underline as UnderlineIcon,
 } from "lucide-react";
 import { useRef } from "react";
 import { useEditor } from "@/lib/store";
-import type { ImageAnnot, Tool } from "@/lib/types";
+import type { Tool } from "@/lib/types";
 import {
-  HIGHLIGHT_COLORS, NOTE_COLORS, STROKE_COLORS, TEXT_COLORS, uid,
+  HIGHLIGHT_COLORS, NOTE_COLORS, STROKE_COLORS, TEXT_COLORS,
 } from "@/lib/utils";
 
 const TOOLS: { tool: Tool; icon: React.ReactNode; label: string; key: string }[] = [
   { tool: "select", icon: <MousePointer2 size={17} />, label: "Select / move", key: "V" },
-  { tool: "edit-text", icon: <TextCursorInput size={17} />, label: "Edit existing text", key: "E" },
+  { tool: "edit-text", icon: <TextCursorInput size={17} />, label: "Edit text blocks — move, resize, rotate, retype", key: "E" },
+  { tool: "form", icon: <FormInput size={17} />, label: "Fill form fields", key: "F" },
   { tool: "text", icon: <Type size={17} />, label: "Add text box", key: "T" },
   { tool: "highlight", icon: <Highlighter size={17} />, label: "Highlight text", key: "H" },
   { tool: "underline", icon: <UnderlineIcon size={17} />, label: "Underline text", key: "U" },
@@ -24,6 +25,7 @@ const TOOLS: { tool: Tool; icon: React.ReactNode; label: string; key: string }[]
   { tool: "line", icon: <Minus size={17} />, label: "Line", key: "L" },
   { tool: "arrow", icon: <ArrowUpRight size={17} />, label: "Arrow", key: "A" },
   { tool: "image", icon: <ImageIcon size={17} />, label: "Insert image", key: "" },
+  { tool: "sign", icon: <PenTool size={17} />, label: "Sign document", key: "" },
   { tool: "note", icon: <StickyNote size={17} />, label: "Sticky note", key: "N" },
   { tool: "link", icon: <Link2 size={17} />, label: "Add hyperlink", key: "K" },
 ];
@@ -38,28 +40,8 @@ export default function Toolbar() {
 
   const onImageChosen = (file: File) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const src = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
-        const st = useEditor.getState();
-        const page = st.currentPage;
-        const size = st.pageSizes[page] ?? { w: 612, h: 792 };
-        const maxW = size.w * 0.5;
-        const scale = Math.min(1, maxW / img.naturalWidth);
-        const w = Math.max(24, img.naturalWidth * scale);
-        const h = Math.max(24, img.naturalHeight * scale);
-        const annot: ImageAnnot = {
-          id: uid(), page, type: "image",
-          x: (size.w - w) / 2, y: (size.h - h) / 2, w, h,
-          src, rotate: 0,
-        };
-        st.addAnnot(annot);
-        st.set({ tool: "select" });
-        st.toast("Image placed — drag to position it", "info");
-      };
-      img.src = src;
-    };
+    reader.onload = () =>
+      useEditor.getState().placeImage(reader.result as string);
     reader.readAsDataURL(file);
   };
 
@@ -72,7 +54,12 @@ export default function Toolbar() {
             title={key ? `${label} (${key})` : label}
             onClick={() => {
               if (tool === "image") { s.setTool("image"); pickImage(); }
-              else s.setTool(tool);
+              else if (tool === "sign") s.set({ modal: "sign" });
+              else {
+                if (tool === "form" && !s.formFields.length)
+                  s.toast("This document has no fillable form fields", "info");
+                s.setTool(tool);
+              }
             }}
           >
             {icon}
@@ -99,6 +86,34 @@ export default function Toolbar() {
 function ContextStrip() {
   const s = useEditor();
   const sel = s.annots.find((a) => a.id === s.selectedId);
+
+  // A live text block gets its own strip (colors/fonts of existing text are
+  // preserved by the engine, so no restyle controls here — just rotation).
+  if (sel?.type === "textblock" && (s.tool === "select" || s.tool === "edit-text")) {
+    return (
+      <div className="ctx-strip">
+        <span className="cs-label">Text block</span>
+        <span className="cs-label">Rotation</span>
+        <input
+          className="input" type="number" step={1} min={-180} max={180}
+          style={{ width: 64, padding: "5px 6px" }}
+          value={Math.round(sel.rotate * 10) / 10}
+          onChange={(e) => s.updateAnnot(sel.id, {
+            rotate: Math.max(-180, Math.min(180, Number(e.target.value) || 0)),
+          } as any, true)}
+        />
+        {sel.rotate !== 0 && (
+          <button className="btn small" onClick={() =>
+            s.updateAnnot(sel.id, { rotate: 0 } as any, true)}>
+            Straighten
+          </button>
+        )}
+        <span className="cs-label">
+          Drag to move · side handles re-wrap the text · double-click to retype
+        </span>
+      </div>
+    );
+  }
 
   // Selection overrides tool: show quick controls for the selected object.
   if (s.tool === "select" && sel) {
@@ -134,8 +149,39 @@ function ContextStrip() {
   switch (s.tool) {
     case "select":
       return <div className="ctx-strip"><span className="cs-label">Click an object to select it · drag to move · Delete to remove</span></div>;
+    case "form": {
+      const pending = Object.entries(s.formDraft).filter(([xref, v]) =>
+        s.formFields.some((f) => f.xref === Number(xref) && f.value !== v)).length;
+      return (
+        <div className="ctx-strip">
+          <span className="cs-label">
+            {s.formFields.length
+              ? `${s.formFields.length} form field${s.formFields.length > 1 ? "s" : ""} — click one to fill it`
+              : "This document has no fillable form fields"}
+          </span>
+          {pending > 0 && (
+            <>
+              <span className="cs-label" style={{ color: "var(--warn)" }}>
+                {pending} unsaved change{pending > 1 ? "s" : ""}
+              </span>
+              <button className="btn small primary" onClick={() => s.applyFields()}>
+                Save fields to PDF
+              </button>
+            </>
+          )}
+        </div>
+      );
+    }
     case "edit-text":
-      return <div className="ctx-strip"><span className="cs-label">Click any text block on the page to rewrite it</span></div>;
+      return (
+        <div className="ctx-strip">
+          <span className="cs-label">
+            Click a text block to pick it up — drag to move, pull the side
+            handles to re-wrap, use the knob to rotate, double-click to retype.
+            Double-click empty space for a new text box.
+          </span>
+        </div>
+      );
     case "text":
       return (
         <div className="ctx-strip">
@@ -234,7 +280,7 @@ function ContextStrip() {
 
 function selLabel(t: string) {
   const names: Record<string, string> = {
-    text: "text box", textedit: "text edit", highlight: "highlight",
+    text: "text box", textblock: "text block", highlight: "highlight",
     underline: "underline", strikeout: "strike-through", ink: "pen stroke",
     rect: "rectangle", ellipse: "ellipse", line: "line", arrow: "arrow",
     image: "image", note: "sticky note", link: "hyperlink",

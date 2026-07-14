@@ -17,8 +17,9 @@ export default function StatusBar() {
     const el = s.stageEl;
     const size = s.pageSizes[s.currentPage];
     if (!el || !size) return;
-    const availW = el.clientWidth - 72;
-    const availH = el.clientHeight - 56;
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    const availW = isMobile ? el.clientWidth - 16 : el.clientWidth - 72;
+    const availH = isMobile ? el.clientHeight - 40 : el.clientHeight - 56;
     const z = mode === "width"
       ? availW / size.w
       : Math.min(availW / size.w, availH / size.h);
@@ -66,18 +67,21 @@ export default function StatusBar() {
         onClick={() => s.set({ viewMode: "single" })}
       ><SinglePageIcon size={14} /></button>
 
-      <div className="divider-v" />
-
-      <button
-        className={`icon-btn ${s.showGrid ? "active" : ""}`}
-        style={{ width: 26, height: 26 }} title="Toggle layout grid"
-        onClick={() => s.set({ showGrid: !s.showGrid })}
-      ><LayoutGrid size={14} /></button>
-      <button
-        className={`icon-btn ${s.snap ? "active" : ""}`}
-        style={{ width: 26, height: 26 }} title="Snap to grid (8pt)"
-        onClick={() => s.set({ snap: !s.snap })}
-      ><Magnet size={14} /></button>
+      {!s.previewMode && (
+        <>
+          <div className="divider-v" />
+          <button
+            className={`icon-btn ${s.showGrid ? "active" : ""}`}
+            style={{ width: 26, height: 26 }} title="Toggle layout grid"
+            onClick={() => s.set({ showGrid: !s.showGrid })}
+          ><LayoutGrid size={14} /></button>
+          <button
+            className={`icon-btn ${s.snap ? "active" : ""}`}
+            style={{ width: 26, height: 26 }} title="Snap to grid (8pt)"
+            onClick={() => s.set({ snap: !s.snap })}
+          ><Magnet size={14} /></button>
+        </>
+      )}
 
       <div style={{ flex: 1 }} />
 

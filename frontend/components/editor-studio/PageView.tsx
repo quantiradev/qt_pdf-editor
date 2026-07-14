@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { getPdfjs } from "@/lib/pdf";
 import { useEditor } from "@/lib/store";
-import type { Annot, LinkAnnot, Rect, TextBlock } from "@/lib/types";
+import type { Annot, FormField, Paragraph, Rect } from "@/lib/types";
 import { FONT_CSS, GRID_SIZE, SNAP_SIZE, snapTo, uid } from "@/lib/utils";
 import AnnotLayer from "./AnnotLayer";
 
@@ -30,6 +30,7 @@ export default function PageView({ pno }: { pno: number }) {
 
   const size = s.pageSizes[pno] ?? { w: 612, h: 792 };
   const zoom = s.zoom;
+  const epoch = s.pageEpochs[pno] ?? 0; // bumps only when this page's content changed
   const W = size.w * zoom;
   const H = size.h * zoom;
 
@@ -57,14 +58,15 @@ export default function PageView({ pno }: { pno: number }) {
     };
   }, []);
 
-  /* ---------- pdf canvas render ---------- */
+  /* ---------- pdf canvas render (re-runs only when epoch/zoom change) ---------- */
   useEffect(() => {
-    if (!visible || !s.doc) return;
+    const doc = useEditor.getState().doc;
+    if (!visible || !doc) return;
     let cancelled = false;
     let task: any = null;
     (async () => {
       try {
-        const page = await s.doc.getPage(pno + 1);
+        const page = await doc.getPage(pno + 1);
         if (cancelled || !canvasRef.current) return;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         let scale = zoom * dpr;
@@ -94,12 +96,14 @@ export default function PageView({ pno }: { pno: number }) {
       } catch {}
     })();
     return () => { cancelled = true; task?.cancel?.(); };
-  }, [visible, s.doc, pno, zoom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, epoch, pno, zoom]);
 
   /* ---------- text layer (for markup selection) ---------- */
-  const wantsTextLayer = MARKUP_TOOLS.has(s.tool);
+  const wantsTextLayer = s.previewMode || MARKUP_TOOLS.has(s.tool);
   useEffect(() => {
-    if (!visible || !s.doc || !textRef.current) return;
+    const doc = useEditor.getState().doc;
+    if (!visible || !doc || !textRef.current) return;
     let cancelled = false;
     let layer: any = null;
     const container = textRef.current;
@@ -107,7 +111,7 @@ export default function PageView({ pno }: { pno: number }) {
     (async () => {
       try {
         const pdfjs = await getPdfjs();
-        const page = await s.doc.getPage(pno + 1);
+        const page = await doc.getPage(pno + 1);
         if (cancelled) return;
         const vp = page.getViewport({ scale: zoom });
         container.style.setProperty("--scale-factor", String(zoom));
@@ -120,7 +124,8 @@ export default function PageView({ pno }: { pno: number }) {
       } catch {}
     })();
     return () => { cancelled = true; layer?.cancel?.(); container.innerHTML = ""; };
-  }, [visible, s.doc, pno, zoom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, epoch, pno, zoom]);
 
   /* ---------- coordinate helpers ---------- */
   const toPage = (e: { clientX: number; clientY: number }) => {
@@ -135,6 +140,7 @@ export default function PageView({ pno }: { pno: number }) {
   /* ---------- creation gestures ---------- */
   const onPointerDown = (e: React.PointerEvent) => {
     const st = useEditor.getState();
+    if (st.previewMode) return;
     const tool = st.tool;
     if (e.button !== 0) return;
 
@@ -158,6 +164,15 @@ export default function PageView({ pno }: { pno: number }) {
         text: "", color: st.opts.noteColor, createdAt: Date.now(),
       });
       st.set({ rightOpen: true, rightTab: "comments", tool: "select" });
+      return;
+    }
+    if (tool === "edit-text" || tool === "select") {
+      // clicking past every object: drop the current selection; the flush
+      // tick then commits real edits and sweeps untouched block sessions
+      if (st.selectedId || st.editingId) {
+        st.set({ selectedId: null, editingId: null });
+        st.scheduleFlush();
+      }
       return;
     }
     if (!DRAW_TOOLS.has(tool)) return;
@@ -272,11 +287,11 @@ export default function PageView({ pno }: { pno: number }) {
     sel.removeAllRanges();
   };
 
-  /* ---------- edit-text blocks ---------- */
+  /* ---------- edit-text paragraphs ---------- */
   useEffect(() => {
-    if (s.tool === "edit-text" && visible) s.fetchTextBlocks(pno);
+    if (s.tool === "edit-text" && visible) s.fetchParagraphs(pno);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.tool, visible, pno, s.meta?.version]);
+  }, [s.tool, visible, pno, epoch]);
 
   const cursor =
     s.tool === "pen" ? "crosshair"
@@ -284,7 +299,7 @@ export default function PageView({ pno }: { pno: number }) {
       : s.tool === "text" || s.tool === "note" ? "copy"
       : "default";
 
-  const blocks = s.textBlocks[pno];
+  const paras = s.paragraphs[pno];
 
   return (
     <div
@@ -297,6 +312,21 @@ export default function PageView({ pno }: { pno: number }) {
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
       onMouseUp={onMouseUpMarkup}
+      onDoubleClick={(e) => {
+        // edit-text: double-click on empty page space starts a new text box
+        const st = useEditor.getState();
+        if (st.previewMode || st.tool !== "edit-text") return;
+        const p = toPage(e);
+        const a: Annot = {
+          id: uid(), page: pno, type: "text",
+          x: p.x, y: p.y, w: 220, h: st.opts.fontSize * 1.6,
+          text: "", fontSize: st.opts.fontSize, fontFamily: st.opts.fontFamily,
+          color: st.opts.fontColor, bold: st.opts.bold, italic: st.opts.italic,
+          align: st.opts.align,
+        };
+        st.addAnnot(a);
+        st.set({ editingId: a.id });
+      }}
     >
       {!rendered && <div className="page-loading">…</div>}
       <canvas ref={canvasRef} className="pdf-canvas" style={{ width: W, height: H }} />
@@ -308,15 +338,81 @@ export default function PageView({ pno }: { pno: number }) {
       )}
       <div ref={textRef} className={`textLayer ${wantsTextLayer ? "interactive" : ""}`} />
 
-      {s.tool === "edit-text" && Array.isArray(blocks) && (
-        <TextBlocksOverlay pno={pno} blocks={blocks} zoom={zoom} />
+      {s.search.open && s.search.matches.length > 0 && (
+        <div className="annot-layer" style={{ zIndex: 5, pointerEvents: "none" }}>
+          {s.search.matches.map((m, i) =>
+            m.page === pno ? (
+              <div
+                key={i}
+                className={`search-hit ${i === s.search.index ? "current" : ""}`}
+                style={{
+                  left: m.x * zoom, top: m.y * zoom,
+                  width: m.w * zoom, height: m.h * zoom,
+                }}
+              />
+            ) : null)}
+        </div>
       )}
 
       <AnnotLayer pno={pno} zoom={zoom} pageW={size.w} pageH={size.h} />
 
+      {s.tool === "form" && !s.previewMode && (
+        <div className="annot-layer" style={{ zIndex: 6 }}>
+          {s.formFields.map((f) =>
+            f.page === pno ? <FieldInput key={f.xref} f={f} zoom={zoom} /> : null)}
+        </div>
+      )}
+
       {gesture && <GesturePreview g={gesture} zoom={zoom} pageW={size.w} pageH={size.h} />}
       {s.pendingLink?.page === pno && <LinkPopover zoom={zoom} />}
     </div>
+  );
+}
+
+/* ---------------- form field overlay (form tool) ---------------- */
+
+function FieldInput({ f, zoom }: { f: FormField; zoom: number }) {
+  const s = useEditor();
+  const val = s.formDraft[f.xref] ?? f.value;
+  const base: React.CSSProperties = {
+    position: "absolute",
+    left: f.x * zoom, top: f.y * zoom,
+    width: f.w * zoom, height: f.h * zoom,
+    pointerEvents: "auto",
+  };
+  const stop = (e: React.PointerEvent) => e.stopPropagation();
+
+  if (f.type === "checkbox") {
+    return (
+      <input
+        type="checkbox" className="form-field hit" style={base}
+        checked={Boolean(val)} title={f.name}
+        onPointerDown={stop}
+        onChange={(e) => s.setFieldDraft(f.xref, e.target.checked)}
+      />
+    );
+  }
+  if (f.type === "choice") {
+    return (
+      <select
+        className="form-field hit" style={{ ...base, fontSize: Math.max(9, (f.fontSize || 11) * zoom) }}
+        value={String(val)} title={f.name}
+        onPointerDown={stop}
+        onChange={(e) => s.setFieldDraft(f.xref, e.target.value)}
+      >
+        {!f.options.includes(String(val)) && <option value={String(val)}>{String(val)}</option>}
+        {f.options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+  }
+  return (
+    <input
+      className="form-field hit"
+      style={{ ...base, fontSize: Math.max(9, (f.fontSize || 11) * zoom) }}
+      value={String(val)} title={f.name} placeholder={f.name}
+      onPointerDown={stop}
+      onChange={(e) => s.setFieldDraft(f.xref, e.target.value)}
+    />
   );
 }
 
@@ -363,71 +459,6 @@ function GesturePreview({ g, zoom, pageW, pageH }: {
           stroke={stroke} strokeWidth={sw} strokeLinecap="round" />
       )}
     </svg>
-  );
-}
-
-/* ---------------- click-to-edit existing text ---------------- */
-
-function TextBlocksOverlay({ pno, blocks, zoom }: {
-  pno: number; blocks: TextBlock[]; zoom: number;
-}) {
-  const s = useEditor();
-  const [editing, setEditing] = useState<number | null>(null);
-  const [value, setValue] = useState("");
-
-  // Commits straight into the PDF: the original glyphs are removed from the
-  // page content and the new text is inserted — no overlay remains.
-  const commit = (block: TextBlock) => {
-    setEditing(null);
-    if (value === block.text) return;
-    s.applyTextEdit({
-      id: uid(), page: pno, type: "textedit",
-      x: block.x - 1, y: block.y - 1, w: block.w + 2, h: block.h + 2,
-      text: value,
-      fontSize: block.fontSize, fontFamily: block.fontFamily,
-      color: block.color, bold: block.bold, italic: block.italic,
-    });
-  };
-
-  return (
-    <div className="blocks-layer">
-      {blocks.map((b, i) => {
-        if (editing === i) {
-          return (
-            <textarea
-              key={i} autoFocus
-              className="annot-text-editor"
-              style={{
-                left: b.x * zoom - 2, top: b.y * zoom - 2,
-                width: Math.max(120, b.w * zoom + 30),
-                height: Math.max(30, b.h * zoom + 16),
-                fontSize: b.fontSize * zoom,
-                fontFamily: FONT_CSS[b.fontFamily],
-                fontWeight: b.bold ? 700 : 400,
-                fontStyle: b.italic ? "italic" : "normal",
-                color: b.color, lineHeight: 1.25,
-              }}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              onBlur={() => commit(b)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") { e.stopPropagation(); setEditing(null); }
-                if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) commit(b);
-              }}
-            />
-          );
-        }
-        return (
-          <div
-            key={i}
-            className="text-block-hit"
-            title="Click to edit this text"
-            style={{ left: b.x * zoom - 2, top: b.y * zoom - 2, width: b.w * zoom + 4, height: b.h * zoom + 4 }}
-            onClick={() => { setEditing(i); setValue(b.text); }}
-          />
-        );
-      })}
-    </div>
   );
 }
 

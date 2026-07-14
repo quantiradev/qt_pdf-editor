@@ -1,5 +1,11 @@
+<<<<<<< HEAD
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
 import type { Annot, BakedNote, FileMeta, OutlineItem, TextBlock } from "./types";
+=======
+import type {
+  Annot, BakedNote, FileMeta, FormField, OutlineItem, Paragraph,
+} from "./types";
+>>>>>>> sprint1
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${url}`, init);
@@ -44,8 +50,13 @@ export const api = {
   `${API_URL}/api/files/${id}/content?v=${version}`,
 
   outline: (id: string) => req<OutlineItem[]>(`/api/files/${id}/outline`),
-  textBlocks: (id: string, page: number) =>
-    req<TextBlock[]>(`/api/files/${id}/text?page=${page}`),
+  paragraphs: (id: string, page: number) =>
+    req<Paragraph[]>(`/api/files/${id}/paragraphs?page=${page}`),
+
+  fields: (id: string) => req<FormField[]>(`/api/files/${id}/fields`),
+  setFields: (id: string, values: { xref: number; value: string | boolean }[]) =>
+    req<FileMeta>(`/api/files/${id}/fields`, json({ values })),
+
   notes: (id: string) => req<BakedNote[]>(`/api/files/${id}/notes`),
   editNote: (id: string, xref: number, text: string) =>
     req<FileMeta>(`/api/files/${id}/notes/${xref}`, { ...json({ text }), method: "PATCH" }),
@@ -53,7 +64,8 @@ export const api = {
     req<FileMeta>(`/api/files/${id}/notes/${xref}`, { method: "DELETE" }),
 
   saveAnnotations: (id: string, annotations: Annot[]) =>
-    req<FileMeta>(`/api/files/${id}/annotations`, json({ annotations })),
+    req<FileMeta & { warnings?: string[]; changed_pages?: number[] }>(
+      `/api/files/${id}/annotations`, json({ annotations })),
 
   undo: (id: string) => req<FileMeta>(`/api/files/${id}/undo`, { method: "POST" }),
   redo: (id: string) => req<FileMeta>(`/api/files/${id}/redo`, { method: "POST" }),
@@ -69,6 +81,8 @@ export const api = {
     req<FileMeta>(`/api/files/${id}/pages/delete`, json({ pages })),
   duplicatePages: (id: string, pages: number[]) =>
     req<FileMeta>(`/api/files/${id}/pages/duplicate`, json({ pages })),
+  insertPage: (id: string, after: number) =>
+    req<FileMeta>(`/api/files/${id}/pages/insert`, json({ after })),
   reorderPages: (id: string, order: number[]) =>
     req<FileMeta>(`/api/files/${id}/pages/reorder`, json({ order })),
   extractPages: (id: string, pages: number[], name?: string) =>

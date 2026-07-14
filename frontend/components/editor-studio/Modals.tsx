@@ -1,8 +1,8 @@
 "use client";
 import {
-  ArrowDown, ArrowUp, FileImage, FileText, Loader2, X,
+  ArrowDown, ArrowUp, FileImage, FileText, Loader2, PenTool, Type, X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useEditor } from "@/lib/store";
 import type { FileMeta } from "@/lib/types";
@@ -19,6 +19,7 @@ export default function Modals() {
       {modal === "split" && <SplitModal />}
       {modal === "merge" && <MergeModal />}
       {modal === "watermark" && <WatermarkModal />}
+      {modal === "sign" && <SignModal />}
     </div>
   );
 }
@@ -181,7 +182,7 @@ function SplitModal() {
               <FileText size={15} style={{ flex: "none", color: "var(--accent)" }} />
               <span className="mr-name">{f.name}</span>
               <span className="mr-pages">{f.pages} pages</span>
-              <a className="btn small" href={`/editor/${f.id}`}>Open</a>
+              <a className="btn small" href={`/editor?id=${f.id}`}>Open</a>
             </div>
           ))}
         </>
@@ -237,7 +238,7 @@ function MergeModal() {
       const meta = await api.merge(order, name);
       s.set({ modal: null });
       s.toast(`Merged ${order.length} documents into "${meta.name}"`, "success");
-      window.location.href = `/editor/${meta.id}`;
+      window.location.href = `/editor?id=${meta.id}`;
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -295,6 +296,217 @@ function MergeModal() {
         <div style={{ color: "var(--faint)", fontSize: 12 }}>No other documents — upload more from the library page.</div>
       )}
       {err && <div style={{ color: "var(--danger)", marginTop: 10 }}>{err}</div>}
+    </Shell>
+  );
+}
+
+/* ------------------------------------------------ sign */
+
+const SIG_KEY = "qt_signature";
+const SIG_FONT = '"Snell Roundhand", "Segoe Script", "Brush Script MT", cursive';
+
+/** Crop a canvas to its inked pixels (+pad) and return a transparent PNG. */
+function trimToDataUrl(canvas: HTMLCanvasElement, pad = 8): string | null {
+  const ctx = canvas.getContext("2d")!;
+  const { width, height } = canvas;
+  const px = ctx.getImageData(0, 0, width, height).data;
+  let x0 = width, y0 = height, x1 = -1, y1 = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (px[(y * width + x) * 4 + 3] > 10) {
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  if (x1 < 0) return null; // nothing drawn
+  x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad);
+  x1 = Math.min(width - 1, x1 + pad); y1 = Math.min(height - 1, y1 + pad);
+  const out = document.createElement("canvas");
+  out.width = x1 - x0 + 1;
+  out.height = y1 - y0 + 1;
+  out.getContext("2d")!.drawImage(canvas, x0, y0, out.width, out.height, 0, 0, out.width, out.height);
+  return out.toDataURL("image/png");
+}
+
+function SignModal() {
+  const s = useEditor();
+  const [tab, setTab] = useState<"draw" | "type">("draw");
+  const [ink, setInk] = useState("#111111");
+  const [typed, setTyped] = useState("");
+  const [hasStrokes, setHasStrokes] = useState(false);
+  const [saved, setSaved] = useState<string | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const drawing = useRef(false);
+
+  useEffect(() => {
+    try { setSaved(localStorage.getItem(SIG_KEY)); } catch {}
+  }, []);
+
+  // backing store at 2x for crisp strokes
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c || tab !== "draw") return;
+    c.width = c.offsetWidth * 2;
+    c.height = c.offsetHeight * 2;
+    const ctx = c.getContext("2d")!;
+    ctx.scale(2, 2);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    setHasStrokes(false);
+  }, [tab]);
+
+  const pos = (e: React.PointerEvent) => {
+    const r = canvasRef.current!.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
+  const strokeStart = (e: React.PointerEvent) => {
+    const ctx = canvasRef.current!.getContext("2d")!;
+    const p = pos(e);
+    drawing.current = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = 2.4;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const strokeMove = (e: React.PointerEvent) => {
+    if (!drawing.current) return;
+    const ctx = canvasRef.current!.getContext("2d")!;
+    const p = pos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    setHasStrokes(true);
+  };
+  const strokeEnd = () => { drawing.current = false; };
+
+  const clear = () => {
+    const c = canvasRef.current!;
+    c.getContext("2d")!.clearRect(0, 0, c.width, c.height);
+    setHasStrokes(false);
+  };
+
+  const buildDataUrl = (): string | null => {
+    if (tab === "draw") {
+      return hasStrokes ? trimToDataUrl(canvasRef.current!) : null;
+    }
+    const name = typed.trim();
+    if (!name) return null;
+    const c = document.createElement("canvas");
+    c.width = Math.max(300, name.length * 64);
+    c.height = 200;
+    const ctx = c.getContext("2d")!;
+    ctx.font = `86px ${SIG_FONT}`;
+    ctx.fillStyle = ink;
+    ctx.textBaseline = "middle";
+    ctx.fillText(name, 20, 100);
+    return trimToDataUrl(c);
+  };
+
+  const apply = (src: string | null) => {
+    if (!src) {
+      s.toast(tab === "draw" ? "Draw your signature first" : "Type your name first", "error");
+      return;
+    }
+    try { localStorage.setItem(SIG_KEY, src); } catch {}
+    s.set({ modal: null });
+    s.placeImage(src, "Signature placed — drag it into position, then it is stamped into the PDF");
+  };
+
+  return (
+    <Shell
+      title="Sign document"
+      foot={
+        <>
+          <button className="btn" onClick={() => s.set({ modal: null })}>Cancel</button>
+          <button className="btn primary" onClick={() => apply(buildDataUrl())}>
+            Place signature
+          </button>
+        </>
+      }
+    >
+      <div className="radio-cards" style={{ marginBottom: 12 }}>
+        <button className={`radio-card ${tab === "draw" ? "active" : ""}`} onClick={() => setTab("draw")}>
+          <PenTool size={18} /> Draw
+        </button>
+        <button className={`radio-card ${tab === "type" ? "active" : ""}`} onClick={() => setTab("type")}>
+          <Type size={18} /> Type
+        </button>
+      </div>
+
+      {tab === "draw" ? (
+        <>
+          <canvas
+            ref={canvasRef}
+            style={{
+              width: "100%", height: 170, touchAction: "none", cursor: "crosshair",
+              background: "#fff", border: "1.5px dashed var(--border, #ccc)", borderRadius: 8,
+            }}
+            onPointerDown={strokeStart}
+            onPointerMove={strokeMove}
+            onPointerUp={strokeEnd}
+            onPointerCancel={strokeEnd}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>Ink</span>
+            <div className="swatch-row">
+              {["#111111", "#1e40af"].map((c) => (
+                <button key={c} className={`swatch ${ink === c ? "active" : ""}`}
+                  style={{ background: c }} onClick={() => setInk(c)} />
+              ))}
+            </div>
+            <div style={{ flex: 1 }} />
+            <button className="btn small" onClick={clear}>Clear</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <label className="field">
+            <span>Full name</span>
+            <input className="input" value={typed} autoFocus placeholder="Your name"
+              onChange={(e) => setTyped(e.target.value)} />
+          </label>
+          <div style={{
+            height: 96, display: "flex", alignItems: "center", justifyContent: "center",
+            background: "#fff", border: "1.5px dashed var(--border, #ccc)", borderRadius: 8,
+            fontFamily: SIG_FONT, fontSize: 42, color: ink, overflow: "hidden",
+          }}>
+            {typed.trim() || <span style={{ opacity: 0.3, fontSize: 26 }}>Signature preview</span>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>Ink</span>
+            <div className="swatch-row">
+              {["#111111", "#1e40af"].map((c) => (
+                <button key={c} className={`swatch ${ink === c ? "active" : ""}`}
+                  style={{ background: c }} onClick={() => setInk(c)} />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {saved && (
+        <div className="merge-row" style={{ marginTop: 14, cursor: "pointer" }} onClick={() => apply(saved)}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={saved} alt="Saved signature" style={{ height: 30, maxWidth: 150, objectFit: "contain" }} />
+          <span className="mr-name">Use saved signature</span>
+          <button
+            className="icon-btn" style={{ width: 22, height: 22 }}
+            onClick={(e) => {
+              e.stopPropagation();
+              try { localStorage.removeItem(SIG_KEY); } catch {}
+              setSaved(null);
+            }}
+            title="Delete saved signature"
+          ><X size={13} /></button>
+        </div>
+      )}
+      <div style={{ color: "var(--faint)", fontSize: 12, marginTop: 10, lineHeight: 1.5 }}>
+        The signature is placed on page {s.currentPage + 1} as a movable, resizable object
+        and is stamped permanently into the PDF when you deselect it.
+      </div>
     </Shell>
   );
 }

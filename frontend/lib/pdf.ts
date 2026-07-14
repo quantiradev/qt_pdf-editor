@@ -4,7 +4,8 @@ let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 export function getPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import("pdfjs-dist").then((mod) => {
-      mod.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${mod.version}/build/pdf.worker.min.mjs`;
+      // Use local worker to avoid network issues and unpkg blocking
+      mod.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.mjs`;
       return mod;
     });
   }

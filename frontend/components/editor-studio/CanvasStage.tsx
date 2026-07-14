@@ -9,8 +9,18 @@ export default function CanvasStage() {
 
   useEffect(() => {
     s.set({ stageEl: ref.current });
+    if (s.doc && s.pageSizes.length > 0 && typeof window !== "undefined") {
+      const el = ref.current;
+      const size = s.pageSizes[0];
+      if (el && size) {
+        const isMobile = window.innerWidth < 768;
+        const elW = el.clientWidth || window.innerWidth;
+        const availW = isMobile ? elW - 16 : elW - 72;
+        s.setZoom(availW / size.w);
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [s.doc]);
 
   // ctrl+wheel zoom, keeping the point under the cursor roughly stable
   useEffect(() => {
@@ -58,8 +68,17 @@ export default function CanvasStage() {
       ? [s.currentPage]
       : Array.from({ length: pages }, (_, i) => i);
 
+  const handleStageClick = () => {
+    const st = useEditor.getState();
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      if (st.leftOpen || st.rightOpen) {
+        st.set({ leftOpen: false, rightOpen: false });
+      }
+    }
+  };
+
   return (
-    <div className="stage" ref={ref} onScroll={onScroll}>
+    <div className="stage" ref={ref} onScroll={onScroll} onClick={handleStageClick}>
       <div className="stage-inner">
         {/* keyed by page only: on commits the same canvas re-renders in
             place (offscreen blit), so the document never flashes */}

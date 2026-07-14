@@ -1,16 +1,18 @@
 "use client";
 import {
-  ArrowLeft, Check, ChevronDown, Download, FileOutput, GitMerge,
+  ArrowLeft, Check, ChevronDown, Download, Eye, FileOutput, GitMerge,
   Loader2, PanelLeft, PanelRight, Redo2, Save, Scissors, Stamp, Undo2,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import { useDirty, useEditor } from "@/lib/store";
 
 export default function TopBar() {
   const s = useEditor();
   const dirty = useDirty();
+  const router = useRouter();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -26,6 +28,14 @@ export default function TopBar() {
   const download = async () => {
     if (!(await s.ensureSaved())) return;
     window.location.href = api.downloadUrl(s.fileId!);
+  };
+
+  const handlePreview = async () => {
+    if (dirty) {
+      const saved = await s.save();
+      if (!saved) return;
+    }
+    router.push(`/preview/${s.fileId}`);
   };
 
   return (
@@ -87,12 +97,20 @@ export default function TopBar() {
           </div>
         )}
       </div>
+      <div className="divider-v" />
 
       <button className="btn" onClick={() => s.set({ modal: "export" })}>
         <FileOutput size={15} /> Export
       </button>
       <button className="btn" onClick={download} title="Download the PDF file">
         <Download size={15} /> Download
+      </button>
+      <button
+        className="btn"
+        onClick={handlePreview}
+        title="Switch to preview/viewer mode"
+      >
+        <Eye size={15} /> Preview
       </button>
       <button
         className="btn primary" onClick={() => s.save()}

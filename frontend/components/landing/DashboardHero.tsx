@@ -62,7 +62,7 @@ export default function DashboardHero({
   }, []);
 
   const handleOpenDoc = (id: string) => {
-    router.push(`/editor/${id}`);
+    router.push(`/preview/${id}`);
   };
 
   const handleDeleteDoc = (id: string, e: React.MouseEvent) => {

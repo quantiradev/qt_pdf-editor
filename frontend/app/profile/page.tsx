@@ -392,7 +392,7 @@ export default function ProfilePage() {
                   </div>
                   <button
                     type="submit"
-                    className="px-4.5 py-2 text-xs font-bold rounded-lg bg-zinc-900 hover:bg-zinc-850 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white transition-colors cursor-pointer"
+                    className="px-4.5 py-2 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white transition-colors cursor-pointer"
                   >
                     Change Password
                   </button>
@@ -487,7 +487,7 @@ export default function ProfilePage() {
                     <button
                       type="button"
                       onClick={handleCopyKey}
-                      className="px-4 py-3 rounded-xl bg-zinc-900 hover:bg-zinc-850 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-white text-xs font-bold transition-all cursor-pointer"
+                      className="px-4 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition-all cursor-pointer"
                     >
                       Copy
                     </button>
