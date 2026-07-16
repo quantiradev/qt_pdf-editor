@@ -4,7 +4,8 @@ import { useState } from "react";
 import { api } from "@/lib/api";
 import { useEditor } from "@/lib/store";
 import type { Annot } from "@/lib/types";
-import { fmtBytes, HIGHLIGHT_COLORS, STROKE_COLORS, TEXT_COLORS } from "@/lib/utils";
+import { fmtBytes, HIGHLIGHT_COLORS, STROKE_COLORS, TEXT_COLORS, uid } from "@/lib/utils";
+import FontPicker from "./FontPicker";
 
 export default function RightSidebar() {
   const s = useEditor();
@@ -141,12 +142,8 @@ function TypeProps({ a }: { a: Annot }) {
           </div>
           <div className="prop-row">
             <span>Font</span>
-            <select className="select" value={a.fontFamily}
-              onChange={(e) => up({ fontFamily: e.target.value })}>
-              <option value="helv">Helvetica</option>
-              <option value="tiro">Times</option>
-              <option value="cour">Courier</option>
-            </select>
+            <FontPicker value={a.fontFamily} width={150}
+              onChange={(v) => up({ fontFamily: v })} />
           </div>
           <div className="prop-row">
             <span>Size</span>
@@ -254,22 +251,7 @@ function TypeProps({ a }: { a: Annot }) {
       );
 
     case "image":
-      return (
-        <div className="props-group">
-          <h4>Image</h4>
-          <div className="prop-row">
-            <span>Rotation</span>
-            <button className="btn small" onClick={() => up({ rotate: (((a.rotate + 90) % 360) as any) })}>
-              <RotateCw size={13} /> {a.rotate}°
-            </button>
-          </div>
-          <div className="prop-row">
-            <span>Link URL</span>
-            <input className="input" placeholder="https:// (optional)" value={a.url ?? ""}
-              onChange={(e) => up({ url: e.target.value || undefined }, false)} />
-          </div>
-        </div>
-      );
+      return <ImagePropsGroup a={a} />;
 
     case "note":
       return (
@@ -351,7 +333,7 @@ function DocProps() {
         Select an object on the page to edit its properties here.<br />
         <b style={{ color: "var(--muted)" }}>V</b> select · <b style={{ color: "var(--muted)" }}>T</b> text ·{" "}
         <b style={{ color: "var(--muted)" }}>H</b> highlight · <b style={{ color: "var(--muted)" }}>P</b> pen ·{" "}
-        <b style={{ color: "var(--muted)" }}>Ctrl+S</b> save
+        <b style={{ color: "var(--muted)" }}>X</b> eraser · <b style={{ color: "var(--muted)" }}>Ctrl+S</b> save
       </div>
     </div>
   );
@@ -468,3 +450,134 @@ function BakedNoteCard({ note, busy, onJump, onSave, onDelete }: {
     </div>
   );
 }
+
+function parsePagesString(str: string, totalPages: number): number[] {
+  const pages: number[] = [];
+  const parts = str.split(",");
+  for (const part of parts) {
+    const range = part.trim();
+    if (!range) continue;
+    if (range.includes("-")) {
+      const [startStr, endStr] = range.split("-");
+      const start = parseInt(startStr.trim(), 10);
+      const end = parseInt(endStr.trim(), 10);
+      if (!isNaN(start) && !isNaN(end)) {
+        for (let i = start; i <= end; i++) {
+          if (i >= 1 && i <= totalPages) {
+            pages.push(i - 1); // 0-indexed
+          }
+        }
+      }
+    } else {
+      const p = parseInt(range, 10);
+      if (!isNaN(p) && p >= 1 && p <= totalPages) {
+        pages.push(p - 1); // 0-indexed
+      }
+    }
+  }
+  return Array.from(new Set(pages)).sort((a, b) => a - b);
+}
+
+function ImagePropsGroup({ a: rawAnnot }: { a: Annot }) {
+  const a = rawAnnot as any;
+  const s = useEditor();
+  const up = (patch: any, snap = true) => s.updateAnnot(a.id, patch, snap);
+  const [customPages, setCustomPages] = useState("");
+  const totalPages = s.pageSizes.length;
+
+  const handleApplyAll = () => {
+    const st = useEditor.getState();
+    const otherPages = Array.from({ length: totalPages }, (_, i) => i).filter(pno => pno !== a.page);
+    
+    st.snapshot();
+    const newAnnots = [...st.annots];
+    for (const pno of otherPages) {
+      newAnnots.push({
+        ...a,
+        id: uid(),
+        page: pno,
+      });
+    }
+    st.set({ annots: newAnnots });
+    st.scheduleFlush();
+    st.toast("Signature applied to all pages", "success");
+  };
+
+  const handleApplyCustom = () => {
+    if (!customPages.trim()) {
+      s.toast("Please enter page numbers (e.g., 2, 4, 6-8)", "error");
+      return;
+    }
+    const targetPages = parsePagesString(customPages, totalPages).filter(pno => pno !== a.page);
+    if (targetPages.length === 0) {
+      s.toast("No valid target pages entered", "error");
+      return;
+    }
+
+    const st = useEditor.getState();
+    st.snapshot();
+    const newAnnots = [...st.annots];
+    for (const pno of targetPages) {
+      newAnnots.push({
+        ...a,
+        id: uid(),
+        page: pno,
+      });
+    }
+    st.set({ annots: newAnnots });
+    st.scheduleFlush();
+    s.toast(`Signature applied to pages: ${targetPages.map(p => p + 1).join(", ")}`, "success");
+    setCustomPages("");
+  };
+
+  return (
+    <div className="props-group">
+      <h4>Image Options</h4>
+      <div className="prop-row">
+        <span>Rotation</span>
+        <button className="btn small" onClick={() => up({ rotate: (((a.rotate + 90) % 360) as any) })}>
+          <RotateCw size={13} /> {a.rotate}°
+        </button>
+      </div>
+      <div className="prop-row">
+        <span>Link URL</span>
+        <input className="input" placeholder="https:// (optional)" value={a.url ?? ""}
+          onChange={(e) => up({ url: e.target.value || undefined }, false)} />
+      </div>
+      
+      <div className="border-t border-zinc-200 dark:border-zinc-800 my-3 pt-3 space-y-2">
+        <h5 className="text-xs font-bold text-zinc-500 dark:text-zinc-400">Replicate to Other Pages</h5>
+        
+        <button 
+          className="btn primary small w-full justify-center"
+          disabled={totalPages <= 1}
+          onClick={handleApplyAll}
+        >
+          Apply to All Pages ({totalPages - 1} other{totalPages - 1 === 1 ? "" : "s"})
+        </button>
+        
+        <div className="space-y-1 pt-1">
+          <span className="text-[10px] text-zinc-450 dark:text-zinc-500">Custom pages (e.g. 1, 3, 5-7):</span>
+          <div className="flex gap-1.5">
+            <input 
+              type="text"
+              placeholder="e.g. 2, 4-6"
+              className="input flex-1 py-1 text-xs"
+              value={customPages}
+              onChange={(e) => setCustomPages(e.target.value)}
+            />
+            <button 
+              className="btn small"
+              disabled={totalPages <= 1}
+              onClick={handleApplyCustom}
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+

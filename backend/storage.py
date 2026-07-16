@@ -130,6 +130,7 @@ def hard_delete(file_id: str) -> bool:
         _save(db)
     try:
         path_for(file_id).unlink(missing_ok=True)
+        path_for(file_id).with_suffix(".docx").unlink(missing_ok=True)
         for name in snaps:
             (HISTORY_DIR / name).unlink(missing_ok=True)
     except OSError:

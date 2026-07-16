@@ -65,6 +65,8 @@ export default function AuthCard({ onSuccess, showToast }: AuthCardProps) {
     setAgreeTerms(false);
   }, [activeTab]);
 
+
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -143,46 +145,6 @@ export default function AuthCard({ onSuccess, showToast }: AuthCardProps) {
     }
   };
 
-  const handleSocialLogin = async (platform: string) => {
-    setLoading(true);
-    showToast(`Connecting with ${platform}...`, "info");
-    
-    try {
-      const email = `social_user_${platform.toLowerCase()}@example.com`;
-      const name = `${platform} User`;
-      const password = `oauth_${platform.toLowerCase()}_secure_123`;
-      
-      // Try to register first, if fails because exists, then login
-      let res = await fetch(`${AUTH_API_URL}/api/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, email, password }),
-      });
-      
-      if (!res.ok) {
-        // Fallback to login
-        res = await fetch(`${AUTH_API_URL}/api/auth/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        });
-      }
-      
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || `Failed to authenticate via ${platform}`);
-      }
-      
-      localStorage.setItem("qt_user_session", JSON.stringify({ email: data.user.email, name: data.user.name, loggedIn: true }));
-      showToast(`Successfully logged in via ${platform}!`, "success");
-      onSuccess(data.user.email);
-    } catch (err: any) {
-      showToast(err.message || "An error occurred during authentication", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="w-full max-w-md p-8 glass-panel rounded-3xl shadow-2xl transition-all duration-500 hover:shadow-indigo-500/10">
       {/* Brand Header */}
@@ -229,48 +191,6 @@ export default function AuthCard({ onSuccess, showToast }: AuthCardProps) {
         >
           Sign Up
         </button>
-      </div>
-
-      {/* Social Logins */}
-      <div className="grid grid-cols-2 gap-4 mb-6">
-        <button
-          type="button"
-          onClick={() => handleSocialLogin("Google")}
-          disabled={loading}
-          className="flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-900/30 hover:bg-zinc-50 dark:hover:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-all cursor-pointer disabled:opacity-50"
-        >
-          <svg className="w-4 h-4" viewBox="0 0 24 24">
-            <path
-              fill="#EA4335"
-              d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.866-3.577-7.866-8s3.536-8 7.866-8c2.46 0 4.105 1.025 5.047 1.926l3.245-3.125C18.232 1.704 15.5 1 12.24 1 5.922 1 1 5.922 1 12s4.922 11 11.24 11c6.598 0 11.002-4.636 11.002-11.2 0-.756-.08-1.332-.178-1.8H12.24z"
-            />
-          </svg>
-          Google
-        </button>
-        <button
-          type="button"
-          onClick={() => handleSocialLogin("GitHub")}
-          disabled={loading}
-          className="flex items-center justify-center gap-2.5 py-2.5 px-4 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white/50 dark:bg-zinc-900/30 hover:bg-zinc-50 dark:hover:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700 text-sm font-medium text-zinc-700 dark:text-zinc-300 transition-all cursor-pointer disabled:opacity-50"
-        >
-          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-            <path
-              fillRule="evenodd"
-              clipRule="evenodd"
-              d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.464-1.11-1.464-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.579.688.481C19.137 20.162 22 16.418 22 12c0-5.523-4.477-10-10-10z"
-            />
-          </svg>
-          GitHub
-        </button>
-      </div>
-
-      <div className="relative flex items-center justify-center my-5">
-        <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-zinc-200 dark:border-zinc-800" />
-        </div>
-        <span className="relative px-3 text-xs uppercase tracking-wider text-zinc-400 bg-white/0 backdrop-blur-sm">
-          Or continue with
-        </span>
       </div>
 
       {/* Authentication Form */}

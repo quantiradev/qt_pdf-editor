@@ -67,9 +67,71 @@ export const FONT_CSS: Record<string, string> = {
   cour: '"Courier New", Courier, monospace',
 };
 
-export const HIGHLIGHT_COLORS = ["#ffd400", "#ff7ac2", "#4ade80", "#60a5fa", "#fb923c"];
-export const STROKE_COLORS = ["#e11d48", "#2563eb", "#16a34a", "#f59e0b", "#111111", "#ffffff"];
-export const TEXT_COLORS = ["#111111", "#e11d48", "#2563eb", "#16a34a", "#f59e0b", "#ffffff"];
+/** The three PDF core families the backend can always render without a download. */
+export const BASE_FONTS = [
+  { value: "helv", label: "Helvetica" },
+  { value: "tiro", label: "Times" },
+  { value: "cour", label: "Courier" },
+];
+
+const loaded = new Set<string>();
+
+/**
+ * Pull a Google family's webfont into the page so the overlay previews the
+ * same face the bake will embed. No-op for the Base-14 aliases.
+ */
+export function ensureFont(family: string) {
+  if (typeof document === "undefined") return;
+  if (!family || FONT_CSS[family] || loaded.has(family)) return;
+  loaded.add(family);
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href =
+    `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family)}` +
+    ":ital,wght@0,400;0,700;1,400;1,700&display=swap";
+  document.head.appendChild(link);
+}
+
+/** CSS font-family for an annot's family: Base-14 alias or a Google family. */
+export function fontCss(family: string): string {
+  if (!family) return FONT_CSS.helv;
+  if (FONT_CSS[family]) return FONT_CSS[family];
+  ensureFont(family);
+  return `"${family}", ${FONT_CSS.helv}`;
+}
+
+/**
+ * Palettes are laid out 10-per-row in the picker. The first entries of
+ * HIGHLIGHT_COLORS are load-bearing: the Properties panel takes
+ * `HIGHLIGHT_COLORS.slice(0, 4)` as the sticky-note colours, so those four
+ * stay put. Any colour outside these grids is reachable via the picker's
+ * native "More…" swatch.
+ */
+export const HIGHLIGHT_COLORS = [
+  // the original five stay first (notes slice off the front)
+  "#ffd400", "#ff7ac2", "#4ade80", "#60a5fa", "#fb923c",
+  "#ffff00", "#fde047", "#fbbf24", "#a3e635", "#34d399",
+  "#22d3ee", "#38bdf8", "#818cf8", "#c084fc", "#e879f9",
+  "#fb7185", "#f87171", "#d9f99d", "#bae6fd", "#ddd6fe",
+];
+
+export const STROKE_COLORS = [
+  "#e11d48", "#2563eb", "#16a34a", "#f59e0b", "#111111", "#ffffff",
+  "#7c3aed", "#0d9488", "#ea580c", "#db2777", "#0ea5e9", "#65a30d",
+  "#991b1b", "#1e3a8a", "#14532d", "#78350f", "#404040", "#a6a6a6",
+];
+
+export const TEXT_COLORS = [
+  // neutrals
+  "#000000", "#262626", "#404040", "#595959", "#737373",
+  "#8c8c8c", "#a6a6a6", "#bfbfbf", "#d9d9d9", "#ffffff",
+  // brights
+  "#c00000", "#e11d48", "#ea580c", "#f59e0b", "#eab308",
+  "#65a30d", "#16a34a", "#0d9488", "#0284c7", "#2563eb",
+  // deeps
+  "#4f46e5", "#7c3aed", "#9333ea", "#c026d3", "#db2777",
+  "#831843", "#78350f", "#14532d", "#1e3a8a", "#111827",
+];
 export const NOTE_COLORS = ["#ffd400", "#ff7ac2", "#4ade80", "#60a5fa"];
 
 export const GRID_SIZE = 16; // pt

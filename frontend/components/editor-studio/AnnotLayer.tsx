@@ -3,7 +3,7 @@ import { StickyNote } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { isPristineBlock, useEditor } from "@/lib/store";
 import type { Annot, TextBlockAnnot } from "@/lib/types";
-import { FONT_CSS, SNAP_SIZE, clamp, inkBBox, pointsToPath, snapTo, uid } from "@/lib/utils";
+import { SNAP_SIZE, clamp, fontCss, inkBBox, pointsToPath, snapTo, uid } from "@/lib/utils";
 
 type DragMode = "move" | "resize" | "endpoint" | "rotate";
 
@@ -38,26 +38,58 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
       const sn = (v: number) => snapTo(v, SNAP_SIZE, st.snap);
 
       if (d.mode === "move") {
+        // Find the page wrap under the cursor to support cross-page dragging
+        const element = document.elementFromPoint(e.clientX, e.clientY);
+        const pageWrap = element?.closest(".page-wrap") as HTMLDivElement | null;
+        let targetPno = a.page;
+        if (pageWrap) {
+          const pnoStr = pageWrap.dataset.pno;
+          if (pnoStr != null) {
+            const pnoVal = parseInt(pnoStr, 10);
+            if (!isNaN(pnoVal)) {
+              targetPno = pnoVal;
+            }
+          }
+        }
+
+        const origPageEl = document.querySelector(`.page-wrap[data-pno="${d.orig.page}"]`);
+        let diffX = 0;
+        let diffY = 0;
+        if (origPageEl && pageWrap) {
+          const origRect = origPageEl.getBoundingClientRect();
+          const targetRect = pageWrap.getBoundingClientRect();
+          diffX = (origRect.left - targetRect.left) / zoom;
+          diffY = (origRect.top - targetRect.top) / zoom;
+        }
+
+        const targetSize = st.pageSizes[targetPno] ?? { w: 612, h: 792 };
+        const targetW = targetSize.w;
+        const targetH = targetSize.h;
+
         if (a.type === "ink") {
           st.updateAnnot(a.id, {
-            points: d.orig.points.map(([x, y]: number[]) => [x + dx, y + dy]),
+            page: targetPno,
+            points: d.orig.points.map(([x, y]: number[]) => [x + dx + diffX, y + dy + diffY]),
           } as any);
         } else if (a.type === "line" || a.type === "arrow") {
           st.updateAnnot(a.id, {
-            x1: d.orig.x1 + dx, y1: d.orig.y1 + dy,
-            x2: d.orig.x2 + dx, y2: d.orig.y2 + dy,
+            page: targetPno,
+            x1: d.orig.x1 + dx + diffX, y1: d.orig.y1 + dy + diffY,
+            x2: d.orig.x2 + dx + diffX, y2: d.orig.y2 + dy + diffY,
           } as any);
         } else if (a.type === "textblock" && isUpright(a.rotate)) {
           // baked text past the page edge is clipped away — keep upright
           // blocks fully on the page (rotated ones get the loose clamp)
           st.updateAnnot(a.id, {
-            x: clamp(sn(d.orig.x + dx), 2, Math.max(2, pageW - a.w - 2)),
-            y: clamp(sn(d.orig.y + dy), 2, Math.max(2, pageH - a.h - 2)),
+            page: targetPno,
+            x: clamp(sn(d.orig.x + dx + diffX), 2, Math.max(2, targetW - a.w - 2)),
+            y: clamp(sn(d.orig.y + dy + diffY), 2, Math.max(2, targetH - a.h - 2)),
           } as any);
         } else {
           st.updateAnnot(a.id, {
-            x: clamp(sn(d.orig.x + dx), -a.w * 0.5, pageW - a.w * 0.5),
-            y: clamp(sn(d.orig.y + dy), -10, pageH - 10),
+            page: targetPno,
+            x: clamp(sn(d.orig.x + dx + diffX), -a.w * 0.5, targetW - a.w * 0.5),
+            y: clamp(sn(d.orig.y + dy + diffY), -10, targetH - 10),
           } as any);
         }
       } else if (d.mode === "endpoint") {
@@ -171,7 +203,7 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
     const wrap = (e.target as HTMLElement).closest(".page-wrap");
     const r = wrap?.getBoundingClientRect();
     const st = useEditor.getState();
-    st.set({ selectedId: a.id });
+    st.set({ selectedId: a.id, rightOpen: true, rightTab: "props" });
     st.snapshot();
     st.beginInteract(); // pause auto-commit while dragging/resizing
     drag.current = {
@@ -184,12 +216,25 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
 
   const selectable = !s.previewMode && s.tool === "select";
   const editableText = !s.previewMode && s.tool === "edit-text";
+  const erasable = !s.previewMode && s.tool === "eraser";
 
+  const handlePointerDownAnnot = (e: React.PointerEvent, a: Annot) => {
+    if (erasable) {
+      s.removeAnnot(a.id);
+      return;
+    }
+    if (selectable) {
+      startDrag(e, a, "move");
+    }
+  };
+
+  // Fetch paragraph layout whenever either the select or edit-text tool is
+  // active so we can show baked-text outlines in both modes.
   useEffect(() => {
-    if (editableText) {
+    if (editableText || selectable) {
       s.fetchParagraphs(pno);
     }
-  }, [editableText, pno, s]);
+  }, [editableText, selectable, pno, s]);
 
   const rawParagraphs = s.paragraphs[pno];
   const paragraphs = Array.isArray(rawParagraphs) ? rawParagraphs : [];
@@ -216,31 +261,33 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
       {/* SVG sub-layer: ink + shapes + lines */}
       <svg
         viewBox={`0 0 ${pageW} ${pageH}`} preserveAspectRatio="none"
-        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" }}
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible", pointerEvents: "none" }}
       >
         {annots.map((a) => {
           if (a.type === "ink") {
+            const active = selectable;
             return (
               <path
                 key={a.id} d={pointsToPath(a.points)} fill="none"
                 stroke={a.color} strokeWidth={a.width} opacity={a.opacity}
                 strokeLinecap="round" strokeLinejoin="round"
-                className={selectable ? "hit" : ""}
-                style={{ cursor: selectable ? "move" : undefined, pointerEvents: selectable ? "stroke" : "none" }}
-                onPointerDown={(e) => startDrag(e, a, "move")}
+                className={active ? "hit" : ""}
+                style={{ cursor: erasable ? "pointer" : (selectable ? "move" : undefined), pointerEvents: active ? "stroke" : "none" }}
+                onPointerDown={(e) => handlePointerDownAnnot(e, a)}
               />
             );
           }
           if (a.type === "rect" || a.type === "ellipse") {
+            const active = selectable;
             const common = {
               fill: a.fill ?? "none", fillOpacity: a.fill ? a.opacity * 0.45 : 0,
               stroke: a.stroke, strokeWidth: a.strokeWidth, strokeOpacity: a.opacity,
-              className: selectable ? "hit" : "",
+              className: active ? "hit" : "",
               style: {
-                cursor: selectable ? "move" : undefined,
-                pointerEvents: (selectable ? "visiblePainted" : "none") as any,
+                cursor: erasable ? "pointer" : (selectable ? "move" : undefined),
+                pointerEvents: (active ? "visiblePainted" : "none") as any,
               },
-              onPointerDown: (e: React.PointerEvent) => startDrag(e, a, "move"),
+              onPointerDown: (e: React.PointerEvent) => handlePointerDownAnnot(e, a),
             };
             return a.type === "rect" ? (
               <rect key={a.id} x={a.x} y={a.y} width={a.w} height={a.h} {...common} />
@@ -249,6 +296,7 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
             );
           }
           if (a.type === "line" || a.type === "arrow") {
+            const active = selectable;
             return (
               <g key={a.id}>
                 {a.type === "arrow" && (
@@ -266,17 +314,17 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
                   stroke={a.stroke} strokeWidth={a.strokeWidth} opacity={a.opacity}
                   strokeLinecap="round"
                   markerEnd={a.type === "arrow" ? `url(#ah-${a.id})` : undefined}
-                  className={selectable ? "hit" : ""}
-                  style={{ cursor: selectable ? "move" : undefined, pointerEvents: selectable ? "stroke" : "none", strokeDasharray: undefined }}
-                  onPointerDown={(e) => startDrag(e, a, "move")}
+                  className={active ? "hit" : ""}
+                  style={{ cursor: erasable ? "pointer" : (selectable ? "move" : undefined), pointerEvents: active ? "stroke" : "none", strokeDasharray: undefined }}
+                  onPointerDown={(e) => handlePointerDownAnnot(e, a)}
                 />
-                {/* fat invisible hit line for easier grabbing */}
-                {selectable && (
+                {/* fat invisible hit line for easier grabbing/erasing */}
+                {active && (
                   <line
                     x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2}
                     stroke="transparent" strokeWidth={Math.max(10, a.strokeWidth * 3)}
-                    className="hit" style={{ cursor: "move", pointerEvents: "stroke" }}
-                    onPointerDown={(e) => startDrag(e, a, "move")}
+                    className="hit" style={{ cursor: erasable ? "pointer" : "move", pointerEvents: "stroke" }}
+                    onPointerDown={(e) => handlePointerDownAnnot(e, a)}
                   />
                 )}
               </g>
@@ -289,32 +337,71 @@ export default function AnnotLayer({ pno, zoom, pageW, pageH }: {
       {/* HTML sub-layer: markup rects, text, blocks, images, notes, links */}
       {annots.map((a) => <HtmlAnnot key={a.id} a={a} zoom={zoom} startDrag={startDrag} />)}
 
-      {/* Block outlines for the edit-text tool: click one to pick it up */}
-      {editableText && paragraphs.map((p) => {
+      {/* Paragraph outlines: visible in both select-tool and edit-text-tool.
+           • select tool  → single-click = lift + select, double-click = lift + enter edit
+           • edit-text    → single-click = lift + enter edit (legacy behaviour)         */}
+      {(selectable || editableText) && paragraphs.map((p) => {
         if (liveParaIds.has(p.id)) return null;
+
+        /** Build the TextBlockAnnot shell from the baked paragraph data. */
+        const buildBlock = (): TextBlockAnnot => ({
+          id: uid(), page: pno, type: "textblock", paraId: p.id,
+          x: p.x, y: p.y, w: p.w, h: p.h, rotate: 0,
+          text: p.text, fontFamily: p.fontFamily, fontSize: p.fontSize,
+          color: p.color, bold: p.bold, italic: p.italic, align: p.align,
+          leading: p.leading,
+          orig: { x: p.x, y: p.y, w: p.w, h: p.h },
+          origText: p.text,
+          origStyle: {
+            fontFamily: p.fontFamily, fontSize: p.fontSize,
+            color: p.color, bold: p.bold, italic: p.italic,
+            align: p.align, leading: p.leading,
+          },
+        });
+
         return (
           <div
             key={p.id}
-            className="text-block-hit hit"
+            className={`text-block-hit hit${selectable ? " select-mode" : ""}`}
             style={{
               left: (p.x - 2) * zoom, top: (p.y - 2) * zoom,
               width: (p.w + 4) * zoom, height: (p.h + 4) * zoom,
+              cursor: "text",
             }}
             onPointerDown={(e) => {
               e.stopPropagation();
               const st = useEditor.getState();
-              if (st.tool !== "edit-text") return;
-              const block: TextBlockAnnot = {
-                id: uid(), page: pno, type: "textblock", paraId: p.id,
-                x: p.x, y: p.y, w: p.w, h: p.h, rotate: 0,
-                text: p.text, fontFamily: p.fontFamily, fontSize: p.fontSize,
-                color: p.color, bold: p.bold, italic: p.italic, align: p.align,
-                leading: p.leading,
-                orig: { x: p.x, y: p.y, w: p.w, h: p.h },
-                origText: p.text,
-              };
-              st.beginBlockEdit(block);
-              startDrag(e, block, "move"); // click-and-drag in one gesture
+              const tool = st.tool;
+              if (tool !== "select" && tool !== "edit-text") return;
+              const block = buildBlock();
+              if (tool === "edit-text") {
+                // Legacy: single click lifts + enters edit immediately
+                st.beginBlockEdit(block);
+                startDrag(e, block, "move");
+              } else {
+                // select tool: single click just lifts + selects (no edit yet)
+                st.beginBlockEdit(block);
+                startDrag(e, block, "move");
+              }
+            }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              const st = useEditor.getState();
+              const tool = st.tool;
+              if (tool !== "select" && tool !== "edit-text") return;
+              // Double-click: lift the block AND enter text-edit mode immediately
+              const existing = st.annots.find(
+                (a) => a.type === "textblock" && (a as TextBlockAnnot).paraId === p.id
+              ) as TextBlockAnnot | undefined;
+              if (existing) {
+                // already lifted — just open the caret
+                st.set({ editingId: existing.id, selectedId: existing.id });
+              } else {
+                const block = buildBlock();
+                st.beginBlockEdit(block);
+                // schedule editingId after the annot is in the store
+                setTimeout(() => st.set({ editingId: block.id, selectedId: block.id }), 0);
+              }
             }}
           />
         );
@@ -339,6 +426,8 @@ function HtmlAnnot({ a, zoom, startDrag }: {
 }) {
   const s = useEditor();
   const selectable = !s.previewMode && s.tool === "select";
+  const erasable = !s.previewMode && s.tool === "eraser";
+  const active = selectable;
   const editing = s.editingId === a.id;
 
   if (a.type === "highlight" || a.type === "underline" || a.type === "strikeout") {
@@ -348,8 +437,8 @@ function HtmlAnnot({ a, zoom, startDrag }: {
           const style: React.CSSProperties = {
             left: r.x * zoom, top: r.y * zoom,
             width: r.w * zoom, height: r.h * zoom,
-            pointerEvents: selectable ? "auto" : "none",
-            cursor: selectable ? "pointer" : undefined,
+            pointerEvents: active ? "auto" : "none",
+            cursor: active ? "pointer" : undefined,
           };
           if (a.type === "highlight") {
             style.background = a.color;
@@ -361,9 +450,14 @@ function HtmlAnnot({ a, zoom, startDrag }: {
               key={i} className={`annot-item hit ${s.selectedId === a.id ? "sel-outline" : ""}`}
               style={style}
               onPointerDown={(e) => {
-                if (!selectable) return;
-                e.stopPropagation();
-                s.set({ selectedId: a.id });
+                if (erasable) {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  s.removeAnnot(a.id);
+                } else if (selectable) {
+                  e.stopPropagation();
+                  s.set({ selectedId: a.id });
+                }
               }}
             >
               {a.type === "underline" && (
@@ -388,22 +482,31 @@ function HtmlAnnot({ a, zoom, startDrag }: {
       left: a.x * zoom, top: a.y * zoom,
       width: a.w * zoom, minHeight: a.h * zoom,
       fontSize: a.fontSize * zoom,
-      fontFamily: FONT_CSS[a.fontFamily],
+      fontFamily: fontCss(a.fontFamily),
       fontWeight: a.bold ? 700 : 400,
       fontStyle: a.italic ? "italic" : "normal",
       textAlign: a.align ?? "left",
       color: a.color, lineHeight: 1.25, whiteSpace: "pre-wrap",
       wordBreak: "break-word",
-      pointerEvents: selectable ? "auto" : "none",
+      pointerEvents: active ? "auto" : "none",
+      cursor: erasable ? "pointer" : undefined,
     };
     if (editing) {
       return <TextEditorOverlay a={a} style={base} />;
     }
     return (
       <div
-        className={`annot-item ${selectable ? "selectable hit" : ""}`}
+        className={`annot-item ${active ? "selectable hit" : ""}`}
         style={base}
-        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
+        onPointerDown={(e) => {
+          if (erasable) {
+            e.stopPropagation();
+            e.preventDefault();
+            s.removeAnnot(a.id);
+          } else if (selectable) {
+            startDrag(e, a, "move");
+          }
+        }}
         onDoubleClick={(e) => {
           e.stopPropagation();
           s.snapshot();
@@ -420,12 +523,21 @@ function HtmlAnnot({ a, zoom, startDrag }: {
     const swap = a.rotate === 90 || a.rotate === 270;
     return (
       <div
-        className={`annot-item ${selectable ? "selectable hit" : ""}`}
+        className={`annot-item ${active ? "selectable hit" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom, width: a.w * zoom, height: a.h * zoom,
-          pointerEvents: selectable ? "auto" : "none", overflow: "hidden",
+          pointerEvents: active ? "auto" : "none", overflow: "hidden",
+          cursor: erasable ? "pointer" : undefined,
         }}
-        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
+        onPointerDown={(e) => {
+          if (erasable) {
+            e.stopPropagation();
+            e.preventDefault();
+            s.removeAnnot(a.id);
+          } else if (selectable) {
+            startDrag(e, a, "move");
+          }
+        }}
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -449,10 +561,18 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         className={`annot-item hit ${s.selectedId === a.id ? "sel-outline" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom,
-          pointerEvents: selectable ? "auto" : "none",
-          cursor: selectable ? "move" : undefined,
+          pointerEvents: active ? "auto" : "none",
+          cursor: active ? (erasable ? "pointer" : "move") : undefined,
         }}
-        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
+        onPointerDown={(e) => {
+          if (erasable) {
+            e.stopPropagation();
+            e.preventDefault();
+            s.removeAnnot(a.id);
+          } else if (selectable) {
+            startDrag(e, a, "move");
+          }
+        }}
         onDoubleClick={() => s.set({ rightOpen: true, rightTab: "comments", selectedId: a.id })}
         title={a.text || "Sticky note — double-click to write the comment"}
       >
@@ -469,10 +589,18 @@ function HtmlAnnot({ a, zoom, startDrag }: {
         className={`annot-item hit link-box ${s.selectedId === a.id ? "sel-outline" : ""}`}
         style={{
           left: a.x * zoom, top: a.y * zoom, width: a.w * zoom, height: a.h * zoom,
-          pointerEvents: selectable ? "auto" : "none",
-          cursor: selectable ? "move" : undefined,
+          pointerEvents: active ? "auto" : "none",
+          cursor: active ? (erasable ? "pointer" : "move") : undefined,
         }}
-        onPointerDown={(e) => selectable && startDrag(e, a, "move")}
+        onPointerDown={(e) => {
+          if (erasable) {
+            e.stopPropagation();
+            e.preventDefault();
+            s.removeAnnot(a.id);
+          } else if (selectable) {
+            startDrag(e, a, "move");
+          }
+        }}
       >
         {s.selectedId === a.id && <span className="link-chip">{a.url}</span>}
       </div>
@@ -495,6 +623,7 @@ function TextBlockView({ a, zoom, startDrag }: {
   const s = useEditor();
   const editing = s.editingId === a.id;
   const selected = s.selectedId === a.id;
+  const erasable = !s.previewMode && s.tool === "eraser";
   const active = s.tool === "select" || s.tool === "edit-text";
   const innerRef = useRef<HTMLDivElement>(null);
   const editStartText = useRef(a.text);
@@ -539,10 +668,16 @@ function TextBlockView({ a, zoom, startDrag }: {
         width: a.w * zoom, height: a.h * zoom,
         transform: `rotate(${a.rotate}deg)`,
         pointerEvents: active ? "auto" : "none",
-        cursor: editing ? "text" : "move",
+        cursor: erasable ? "pointer" : (editing ? "text" : "move"),
       }}
       onPointerDown={(e) => {
         if (editing) { e.stopPropagation(); return; }
+        if (erasable) {
+          e.stopPropagation();
+          e.preventDefault();
+          s.removeAnnot(a.id);
+          return;
+        }
         startDrag(e, a, "move");
       }}
       onDoubleClick={(e) => {
@@ -560,7 +695,7 @@ function TextBlockView({ a, zoom, startDrag }: {
         spellCheck={false}
         style={{
           fontSize: a.fontSize * zoom,
-          fontFamily: FONT_CSS[a.fontFamily],
+          fontFamily: fontCss(a.fontFamily),
           fontWeight: a.bold ? 700 : 400,
           fontStyle: a.italic ? "italic" : "normal",
           textAlign: a.align,
@@ -576,8 +711,17 @@ function TextBlockView({ a, zoom, startDrag }: {
         }}
         onInput={(e) => {
           if (!editing) return;
+          // innerText respects the element's CSS white-space:pre-wrap, so it
+          // returns the exact visible text including runs of spaces.
+          // textContent would concatenate bare DOM nodes without separators when
+          // Chrome creates nested elements, swallowing inter-word spaces.
+          // We normalise \u00a0 (non-breaking space Chrome auto-inserts to keep
+          // trailing spaces visible) back to regular spaces before storing.
+          const raw = (e.target as HTMLElement).innerText
+            .replace(/\u00a0/g, " ")  // nbsp → regular space
+            .replace(/\n$/,  "");     // strip the trailing \n innerText appends
           useEditor.getState().updateAnnot(
-            a.id, { text: (e.target as HTMLElement).innerText } as any);
+            a.id, { text: raw } as any);
         }}
         onPaste={(e) => {
           if (!editing) return;

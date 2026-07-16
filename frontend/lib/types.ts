@@ -7,6 +7,7 @@ export type Tool =
   | "underline"
   | "strikeout"
   | "pen"
+  | "eraser"
   | "rect"
   | "ellipse"
   | "line"
@@ -46,7 +47,8 @@ export interface TextAnnot extends Base, Rect {
   type: "text";
   text: string;
   fontSize: number;
-  fontFamily: "helv" | "tiro" | "cour";
+  /** Base-14 alias ("helv" | "tiro" | "cour") or a Google Fonts family name. */
+  fontFamily: string;
   color: string;
   bold?: boolean;
   italic?: boolean;
@@ -68,7 +70,8 @@ export interface TextBlockAnnot extends Base, Rect {
   /** Degrees, CSS convention (clockwise-positive), about the box centre. */
   rotate: number;
   text: string;
-  fontFamily: "helv" | "tiro" | "cour";
+  /** Base-14 alias ("helv" | "tiro" | "cour") or a Google Fonts family name. */
+  fontFamily: string;
   fontSize: number;
   color: string;
   bold: boolean;
@@ -79,6 +82,19 @@ export interface TextBlockAnnot extends Base, Rect {
   /** The paragraph's original box: masked while the block floats elsewhere. */
   orig: Rect;
   origText: string;
+  /** Original typography, snapshotted at pickup — a restyle (bold/italic/
+   *  colour/font/size) counts as an edit even when geometry and text are
+   *  untouched, so it is baked instead of swept away as a pristine session. */
+  origStyle: {
+    /** Base-14 alias ("helv" | "tiro" | "cour") or a Google Fonts family name. */
+  fontFamily: string;
+    fontSize: number;
+    color: string;
+    bold: boolean;
+    italic: boolean;
+    align: "left" | "center" | "right" | "justify";
+    leading: number;
+  };
 }
 
 export interface MarkupAnnot extends Base {
@@ -160,7 +176,8 @@ export interface Paragraph extends Rect {
   align: "left" | "center" | "right" | "justify";
   leading: number; // baseline distance, pt
   fontSize: number;
-  fontFamily: "helv" | "tiro" | "cour";
+  /** Base-14 alias ("helv" | "tiro" | "cour") or a Google Fonts family name. */
+  fontFamily: string;
   bold: boolean;
   italic: boolean;
   color: string;
@@ -205,10 +222,54 @@ export interface ToolOpts {
   opacity: number;
   highlightColor: string;
   fontSize: number;
-  fontFamily: "helv" | "tiro" | "cour";
+  /** Base-14 alias ("helv" | "tiro" | "cour") or a Google Fonts family name. */
+  fontFamily: string;
   fontColor: string;
   bold: boolean;
   italic: boolean;
   align: "left" | "center" | "right";
   noteColor: string;
+}
+
+// ─── Compare PDF types ────────────────────────────────────────────────────────
+
+export interface DiffRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface DiffItem {
+  type: "addition" | "deletion" | "modification";
+  category: string;
+  text: string;
+  rect: DiffRect;
+  description: string;
+  source: string;
+  difference_type?: string;
+  object_type?: string;
+  original_value?: string | null;
+  revised_value?: string | null;
+  confidence_score?: number;
+}
+
+export interface PageDiff {
+  page_index: number;
+  differences: DiffItem[];
+}
+
+export interface ComparisonResult {
+  file_id_original: string;
+  file_id_revised: string;
+  meta_original: FileMeta;
+  meta_revised: FileMeta;
+  summary: {
+    additions: number;
+    deletions: number;
+    modifications: number;
+  };
+  page_count_original: number;
+  page_count_revised: number;
+  pages: PageDiff[];
 }

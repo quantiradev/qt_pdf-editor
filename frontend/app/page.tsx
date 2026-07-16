@@ -12,6 +12,7 @@ import DashboardHero from "../components/landing/DashboardHero";
 import ToolsGrid from "../components/landing/ToolsGrid";
 import AIAssistantPreview from "../components/landing/AIAssistantPreview";
 import SecurityBanner from "../components/landing/SecurityBanner";
+import DownloadApp from "../components/landing/DownloadApp";
 import Pricing from "../components/landing/Pricing";
 import Faq from "../components/landing/Faq";
 import Footer from "../components/landing/Footer";
@@ -29,6 +30,13 @@ export default function Home() {
   const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; kind: "success" | "info" | "error" } | null>(null);
+
+  const showToast = (msg: string, kind: "success" | "info" | "error" = "info") => {
+    setToast({ msg, kind });
+    setTimeout(() => setToast(null), 4500);
+  };
+
 
   useEffect(() => {
     // Check session in localStorage
@@ -44,6 +52,29 @@ export default function Home() {
       }
     }
   }, []);
+
+  useEffect(() => {
+    // Check if there is a category query param to auto-scroll to the tools section
+    const params = new URLSearchParams(window.location.search);
+    const cat = params.get("category");
+    if (cat && ["edit", "convert", "sign", "ai"].includes(cat)) {
+      setActiveFilter(cat as any);
+      setTimeout(() => {
+        const element = document.getElementById("tools");
+        if (element) {
+          element.scrollIntoView({ behavior: "smooth" });
+        }
+      }, 300);
+    }
+  }, []);
+
+  const handleToolClick = (category: "edit" | "convert" | "sign" | "ai") => {
+    setActiveFilter(category);
+    const element = document.getElementById("tools");
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth" });
+    }
+  };
 
   const handleLogout = () => {
     localStorage.removeItem("qt_user_session");
@@ -108,8 +139,7 @@ export default function Home() {
   };
 
   const handleAction = () => {
-    if (!isLoggedIn) router.push("/auth");
-    else fileInputRef.current?.click();
+    fileInputRef.current?.click();
   };
 
 
@@ -137,6 +167,20 @@ export default function Home() {
         </div>
       )}
 
+      {/* Toast Notification */}
+      {toast && (
+        <div className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-xl shadow-xl border text-sm font-semibold transition-all ${
+          toast.kind === "success"
+            ? "bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300"
+            : toast.kind === "error"
+              ? "bg-red-50 dark:bg-red-950/60 border-red-200 dark:border-red-800 text-red-700 dark:text-red-300"
+              : "bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300"
+        }`}>
+          <span>{toast.msg}</span>
+          <button onClick={() => setToast(null)} className="ml-2 hover:opacity-75">✕</button>
+        </div>
+      )}
+
       {isLoggedIn ? (
         /* Authenticated User Layout (Dashboard Mode) */
         <>
@@ -145,6 +189,7 @@ export default function Home() {
             onLogout={handleLogout}
             userEmail={userEmail}
             userName={userName}
+            onToolClick={handleToolClick}
           />
           
           <DashboardHero
@@ -172,7 +217,7 @@ export default function Home() {
       ) : (
         /* Unauthenticated Guest Layout (Marketing Landing Mode) */
         <>
-          <Header isLoggedIn={false} />
+          <Header isLoggedIn={false} onToolClick={handleToolClick} />
 
           <Hero
             isDragging={isDragging}
@@ -184,13 +229,18 @@ export default function Home() {
             onTriggerFileSelect={triggerFileSelect}
           />
 
+          <DownloadApp />
+
           <ToolsGrid
             activeFilter={activeFilter}
             onFilterChange={setActiveFilter}
             onAction={handleAction}
           />
 
-          <AIAssistantPreview onAction={handleAction} />
+          <AIAssistantPreview onAction={() => {
+            showToast("Subscribe to a plan to unlock premium AI Summarizer features!", "info");
+            document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" });
+          }} />
 
           <SecurityBanner />
 

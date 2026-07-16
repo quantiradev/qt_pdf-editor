@@ -27,6 +27,60 @@ export default function PageView({ pno }: { pno: number }) {
   const [rendered, setRendered] = useState(false);
   const [gesture, setGesture] = useState<Gesture | null>(null);
   const gestureRef = useRef<Gesture | null>(null);
+  const isErasingRef = useRef(false);
+
+  const distToSegment = (px: number, py: number, x1: number, y1: number, x2: number, y2: number) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const l2 = dx * dx + dy * dy;
+    if (l2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  };
+
+  const checkIntersect = (px: number, py: number, a: Annot): boolean => {
+    const pad = 12;
+    if (a.type === "text" || a.type === "textblock" || a.type === "rect" || a.type === "ellipse" || a.type === "image" || a.type === "link") {
+      const ax = a.x, ay = a.y, aw = a.w, ah = a.h;
+      return px >= ax - pad && px <= ax + aw + pad && py >= ay - pad && py <= ay + ah + pad;
+    }
+    if (a.type === "note") {
+      const ax = a.x, ay = a.y;
+      return px >= ax - pad && px <= ax + 26 + pad && py >= ay - pad && py <= ay + 26 + pad;
+    }
+    if (a.type === "line" || a.type === "arrow") {
+      return distToSegment(px, py, a.x1, a.y1, a.x2, a.y2) < pad + (a.strokeWidth || 2.5);
+    }
+    if (a.type === "ink") {
+      if (a.points.length === 0) return false;
+      if (a.points.length === 1) {
+        return Math.hypot(px - a.points[0][0], py - a.points[0][1]) < pad + a.width;
+      }
+      for (let i = 0; i < a.points.length - 1; i++) {
+        const [x1, y1] = a.points[i];
+        const [x2, y2] = a.points[i + 1];
+        if (distToSegment(px, py, x1, y1, x2, y2) < pad + a.width) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (a.type === "highlight" || a.type === "underline" || a.type === "strikeout") {
+      return a.rects.some((r) => px >= r.x - pad && px <= r.x + r.w + pad && py >= r.y - pad && py <= r.y + r.h + pad);
+    }
+    return false;
+  };
+
+  const eraseAt = (px: number, py: number) => {
+    const st = useEditor.getState();
+    const pageAnnots = st.annots.filter((a) => a.page === pno);
+    for (const a of pageAnnots) {
+      if (checkIntersect(px, py, a)) {
+        st.removeAnnot(a.id);
+      }
+    }
+  };
 
   const size = s.pageSizes[pno] ?? { w: 612, h: 792 };
   const zoom = s.zoom;
@@ -166,9 +220,13 @@ export default function PageView({ pno }: { pno: number }) {
       st.set({ rightOpen: true, rightTab: "comments", tool: "select" });
       return;
     }
-    if (tool === "edit-text" || tool === "select") {
-      // clicking past every object: drop the current selection; the flush
-      // tick then commits real edits and sweeps untouched block sessions
+    if (tool === "edit-text" || tool === "select" || tool === "eraser") {
+      if (tool === "eraser") {
+        isErasingRef.current = true;
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+        const p = toPage(e);
+        eraseAt(p.x, p.y);
+      }
       if (st.selectedId || st.editingId) {
         st.set({ selectedId: null, editingId: null });
         st.scheduleFlush();
@@ -191,6 +249,11 @@ export default function PageView({ pno }: { pno: number }) {
   };
 
   const onPointerMove = (e: React.PointerEvent) => {
+    if (isErasingRef.current) {
+      const p = toPage(e);
+      eraseAt(p.x, p.y);
+      return;
+    }
     const g = gestureRef.current;
     if (!g) return;
     const p = toPage(e);
@@ -206,6 +269,10 @@ export default function PageView({ pno }: { pno: number }) {
   };
 
   const onPointerUp = () => {
+    if (isErasingRef.current) {
+      isErasingRef.current = false;
+      return;
+    }
     const g = gestureRef.current;
     gestureRef.current = null;
     setGesture(null);
@@ -287,14 +354,15 @@ export default function PageView({ pno }: { pno: number }) {
     sel.removeAllRanges();
   };
 
-  /* ---------- edit-text paragraphs ---------- */
+  /* ---------- text paragraphs (select + edit-text tools) ---------- */
   useEffect(() => {
-    if (s.tool === "edit-text" && visible) s.fetchParagraphs(pno);
+    if ((s.tool === "edit-text" || s.tool === "select") && visible) s.fetchParagraphs(pno);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.tool, visible, pno, epoch]);
 
   const cursor =
     s.tool === "pen" ? "crosshair"
+      : s.tool === "eraser" ? "cell"
       : DRAW_TOOLS.has(s.tool) ? "crosshair"
       : s.tool === "text" || s.tool === "note" ? "copy"
       : "default";

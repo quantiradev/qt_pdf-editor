@@ -16,12 +16,23 @@ import { clamp, uid } from "./utils";
 export function isPristineBlock(a: Annot): boolean {
   if (a.type !== "textblock") return false;
   const b = a as TextBlockAnnot;
+  const os = b.origStyle;
+  const sameStyle = !os || (
+    b.fontFamily === os.fontFamily &&
+    Math.abs(b.fontSize - os.fontSize) < 0.05 &&
+    b.color === os.color &&
+    b.bold === os.bold &&
+    b.italic === os.italic &&
+    b.align === os.align &&
+    Math.abs(b.leading - (os.leading ?? b.leading)) < 0.05
+  );
   return (
     Math.abs(b.x - b.orig.x) < 0.25 &&
     Math.abs(b.y - b.orig.y) < 0.25 &&
     Math.abs(b.w - b.orig.w) < 0.25 &&
     Math.abs(((b.rotate % 360) + 360) % 360) < 0.05 &&
-    b.text === b.origText
+    b.text === b.origText &&
+    sameStyle
   );
 }
 
@@ -96,6 +107,9 @@ interface EditorState {
   outline: OutlineItem[];
   bakedNotes: BakedNote[];
   paragraphs: Record<number, Paragraph[] | "loading">;
+  /** Google Fonts catalogue for the font picker (empty until loaded/offline). */
+  fontFamilies: string[];
+  fetchFonts: () => void;
   formFields: FormField[];
   /** Field values typed but not yet written into the PDF, keyed by xref. */
   formDraft: Record<number, string | boolean>;
@@ -186,7 +200,7 @@ export const DEFAULT_OPTS: ToolOpts = {
   highlightColor: "#ffd400",
   fontSize: 16,
   fontFamily: "helv",
-  fontColor: "#111111",
+  fontColor: "#000000",
   bold: false,
   italic: false,
   align: "left",
@@ -211,6 +225,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   outline: [],
   bakedNotes: [],
   paragraphs: {},
+  fontFamilies: [],
   formFields: [],
   formDraft: {},
 
@@ -485,12 +500,13 @@ export const useEditor = create<EditorState>((set, get) => ({
       const scale = Math.min(1, maxW / img.naturalWidth);
       const w = Math.max(24, img.naturalWidth * scale);
       const h = Math.max(24, img.naturalHeight * scale);
+      const newId = uid();
       st.addAnnot({
-        id: uid(), page, type: "image",
+        id: newId, page, type: "image",
         x: (size.w - w) / 2, y: (size.h - h) / 2, w, h,
         src, rotate: 0,
       });
-      st.set({ tool: "select" });
+      st.set({ tool: "select", selectedId: newId, rightOpen: true, rightTab: "props" });
       st.toast(hint ?? "Image placed — drag to position it", "info");
     };
     img.src = src;
@@ -564,6 +580,13 @@ export const useEditor = create<EditorState>((set, get) => ({
     } finally {
       set({ busy: null });
     }
+  },
+
+  fetchFonts: () => {
+    if (get().fontFamilies.length) return;
+    api.fonts()
+      .then((r) => set({ fontFamilies: r.families ?? [] }))
+      .catch(() => {});   // offline: the picker keeps the Base-14 trio
   },
 
   fetchParagraphs: (page) => {

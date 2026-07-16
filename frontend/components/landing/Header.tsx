@@ -7,20 +7,25 @@ interface HeaderProps {
   onLogout?: () => void;
   userEmail?: string;
   userName?: string;
+  onToolClick?: (category: "edit" | "convert" | "sign" | "ai") => void;
 }
 
 interface DropdownTool {
   name: string;
   description: string;
+  category: "edit" | "convert" | "sign" | "ai";
   badge?: "AI" | "Popular";
+  href?: string;
   icon: React.ReactNode;
 }
 
-export default function Header({ isLoggedIn, onLogout, userEmail, userName }: HeaderProps) {
+export default function Header({ isLoggedIn, onLogout, userEmail, userName, onToolClick }: HeaderProps) {
   const dropdownTools: DropdownTool[] = [
     {
       name: "Edit PDF",
       description: "Modify text, images, shapes and document formatting directly.",
+      category: "edit",
+      href: "/editor",
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
           <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" />
@@ -30,6 +35,7 @@ export default function Header({ isLoggedIn, onLogout, userEmail, userName }: He
     {
       name: "Merge PDF",
       description: "Combine multiple PDF files into a single document in custom order.",
+      category: "edit",
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
           <path d="M11.99 18.54l-7.37-5.73L3 14.07l9 7 9-7-1.63-1.27-7.38 5.74zM12 16l7.36-5.73L21 9l-9-7-9 7 1.63 1.27L12 16z" />
@@ -39,6 +45,8 @@ export default function Header({ isLoggedIn, onLogout, userEmail, userName }: He
     {
       name: "Compress PDF",
       description: "Reduce file size while maintaining the original rendering quality.",
+      category: "edit",
+      href: "/compress",
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
           <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM19 18H6c-2.21 0-4-1.79-4-4 0-2.05 1.53-3.76 3.56-3.97l1.07-.11.5-.95C8.08 7.14 9.94 6 12 6c2.62 0 4.88 1.86 5.39 4.43l.3 1.5 1.53.11c1.56.1 2.78 1.41 2.78 2.96 0 1.65-1.35 3-3 3zm-5.55-8h-2.9v3H7.5l4.5 4.5 4.5-4.5h-3.05z" />
@@ -46,8 +54,31 @@ export default function Header({ isLoggedIn, onLogout, userEmail, userName }: He
       ),
     },
     {
+      name: "PDF to Word",
+      description: "Convert PDFs to editable Microsoft Word documents with high accuracy.",
+      category: "convert",
+      href: "/pdf-to-word",
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm-1 7V3.5L18.5 9H13v5.5zm-4 4h8v2H8v-2z" />
+        </svg>
+      ),
+    },
+    {
+      name: "Word to PDF",
+      description: "Turn DOCX and DOC files into clean, portable PDF files instantly.",
+      category: "convert",
+      href: "/word-to-pdf",
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M6 2c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6H6zm0 2h7v5h5v11H6V4zm2 8v2h8v-2H8zm0 4v2h5v-2H8z"/>
+        </svg>
+      ),
+    },
+    {
       name: "e-Sign PDF",
       description: "Fill out forms, digital signatures, and securely sign contracts.",
+      category: "sign",
       badge: "Popular",
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -56,8 +87,20 @@ export default function Header({ isLoggedIn, onLogout, userEmail, userName }: He
       ),
     },
     {
+      name: "Protect PDF",
+      description: "Encrypt files with strong passwords and control permissions.",
+      category: "sign",
+      href: "/protect",
+      icon: (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+          <path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z" />
+        </svg>
+      ),
+    },
+    {
       name: "AI Summarizer",
       description: "Analyze large PDF files and instantly extract obligations summaries.",
+      category: "ai",
       badge: "AI",
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -68,6 +111,7 @@ export default function Header({ isLoggedIn, onLogout, userEmail, userName }: He
     {
       name: "AI Smart Chat",
       description: "Query your documents, locate liability clauses and audit obligations.",
+      category: "ai",
       badge: "AI",
       icon: (
         <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
@@ -113,32 +157,64 @@ export default function Header({ isLoggedIn, onLogout, userEmail, userName }: He
             {/* Dropdown Panel */}
             <div className="absolute top-full left-1/2 -translate-x-1/2 w-[560px] p-6 rounded-2xl border border-zinc-200 dark:border-zinc-900 bg-white dark:bg-zinc-950 shadow-2xl backdrop-blur-md opacity-0 invisible group-hover/menu:opacity-100 group-hover/menu:visible transition-all duration-200 translate-y-2 group-hover/menu:translate-y-0 z-50">
               <div className="grid grid-cols-2 gap-4">
-                {dropdownTools.map((tool, idx) => (
-                  <Link
-                    key={idx}
-                    href={isLoggedIn ? "/editor" : "/auth"}
-                    className="flex gap-3.5 p-3 rounded-xl hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors group cursor-pointer"
-                  >
-                    <div className="w-9 h-9 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-300">
-                      {tool.icon}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-bold text-zinc-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
-                          {tool.name}
-                        </span>
-                        {tool.badge && (
-                          <span className="text-[8px] font-extrabold px-1.5 py-0.5 rounded-md uppercase tracking-wider bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-900/30">
-                            {tool.badge}
-                          </span>
-                        )}
+                {dropdownTools.map((tool, idx) => {
+                  const itemContent = (
+                    <>
+                      <div className="w-9 h-9 rounded-lg bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform duration-300">
+                        {tool.icon}
                       </div>
-                      <p className="text-xs text-zinc-550 dark:text-zinc-400 mt-1 leading-relaxed line-clamp-2 font-normal">
-                        {tool.description}
-                      </p>
-                    </div>
-                  </Link>
-                ))}
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-bold text-zinc-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors">
+                            {tool.name}
+                          </span>
+                          {tool.badge && (
+                            <span className="text-[8px] font-extrabold px-1.5 py-0.5 rounded-md uppercase tracking-wider bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200/50 dark:border-indigo-900/30">
+                              {tool.badge}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-zinc-550 dark:text-zinc-400 mt-1 leading-relaxed line-clamp-2 font-normal">
+                          {tool.description}
+                        </p>
+                      </div>
+                    </>
+                  );
+
+                  if (tool.href) {
+                    return (
+                      <Link
+                        key={idx}
+                        href={tool.href}
+                        className="flex gap-3.5 p-3 rounded-xl hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors group cursor-pointer"
+                      >
+                        {itemContent}
+                      </Link>
+                    );
+                  }
+
+                  if (onToolClick) {
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => onToolClick(tool.category)}
+                        className="flex gap-3.5 p-3 rounded-xl hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors group cursor-pointer text-left focus:outline-none"
+                      >
+                        {itemContent}
+                      </button>
+                    );
+                  }
+
+                  return (
+                    <Link
+                      key={idx}
+                      href={`/?category=${tool.category}`}
+                      className="flex gap-3.5 p-3 rounded-xl hover:bg-zinc-50 dark:hover:bg-zinc-900/50 transition-colors group cursor-pointer"
+                    >
+                      {itemContent}
+                    </Link>
+                  );
+                })}
               </div>
             </div>
           </div>

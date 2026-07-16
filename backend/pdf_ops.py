@@ -6,12 +6,15 @@ scale 1 and PyMuPDF page coordinates, so no conversion is needed.
 """
 import base64
 import io
+import logging
 import math
 import statistics
 import zipfile
 from pathlib import Path
 
 import fitz  # PyMuPDF
+
+logger = logging.getLogger(__name__)
 
 import text_engine
 
@@ -602,9 +605,11 @@ def merge_documents(paths: list[Path]) -> bytes:
 
 # ---------------------------------------------------------------- export
 
-def export_images(path: Path, pages: list[int], fmt: str, dpi: int) -> list[tuple[str, bytes]]:
+def export_images(path: Path, pages: list[int], fmt: str, dpi: int, password: str = None) -> list[tuple[str, bytes]]:
     """Render pages to PNG/JPG. Returns [(filename, bytes)]."""
     doc = fitz.open(str(path))
+    if doc.is_encrypted and password:
+        doc.authenticate(password)
     ext = "png" if fmt == "png" else "jpg"
     out = []
     for pno in pages:
@@ -624,3 +629,859 @@ def zip_bytes(entries: list[tuple[str, bytes]]) -> bytes:
         for name, data in entries:
             zf.writestr(name, data)
     return buf.getvalue()
+
+
+def compress(data: bytes, quality: int = 70) -> bytes:
+    """Optimize PDF by aggressively downsampling and re-compressing embedded raster images."""
+    import logging
+    from PIL import Image
+    logger = logging.getLogger(__name__)
+    
+    # Map quality to max image dimensions to keep file sizes small while maintaining quality
+    if quality <= 50: # Extreme
+        max_dim = 1000
+    elif quality <= 70: # Recommended
+        max_dim = 1500
+    else: # Less
+        max_dim = 2000
+
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        # Iterate through pages and optimize images
+        processed_xrefs = set()
+        for page in doc:
+            for img_info in page.get_images(full=True):
+                xref = img_info[0]
+                if xref in processed_xrefs:
+                    continue
+                processed_xrefs.add(xref)
+                
+                try:
+                    base_image = doc.extract_image(xref)
+                    if not base_image:
+                        continue
+                    img_bytes = base_image["image"]
+                    
+                    # Don't compress tiny images (e.g. less than 15 KB) to save CPU
+                    if len(img_bytes) < 15360:
+                        continue
+                        
+                    im = Image.open(io.BytesIO(img_bytes))
+                    
+                    # Convert transparent images to white background to prevent text visibility loss
+                    if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                        bg = Image.new("RGB", im.size, (255, 255, 255))
+                        if im.mode == "RGBA":
+                            bg.paste(im, mask=im.split()[3])
+                        else:
+                            bg.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[3])
+                        im = bg
+                    elif im.mode == "CMYK":
+                        im = im.convert("RGB")
+                    elif im.mode != "RGB":
+                        im = im.convert("RGB")
+                        
+                    # Downsample if image exceeds max dimension
+                    if max(im.size) > max_dim:
+                        im.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                        
+                    # Save as optimized JPEG
+                    out_img = io.BytesIO()
+                    im.save(out_img, format="JPEG", quality=quality, optimize=True)
+                    compressed_bytes = out_img.getvalue()
+                    
+                    # Only swap the image in the PDF if it actually reduces size
+                    if len(compressed_bytes) < len(img_bytes):
+                        page.replace_image(xref, stream=compressed_bytes)
+                except Exception as exc:
+                    logger.warning(f"Failed to compress image xref {xref}: {exc}")
+                    
+        # Apply standard PDF garbage collection, stream deflating, and cleaning
+        out = io.BytesIO()
+        doc.save(out, garbage=4, deflate=True, clean=True)
+        compressed_data = out.getvalue()
+        
+        if len(compressed_data) >= len(data):
+            return data
+        return compressed_data
+
+
+def compress_to_target_size(data: bytes, target_size: int) -> bytes:
+    """Try different quality levels to get PDF size below or equal to target_size."""
+    best_data = None
+    best_size = float('inf')
+    
+    # Try compressing at different quality steps from high to low
+    for q in [90, 75, 60, 45, 30, 20]:
+        try:
+            compressed = compress(data, quality=q)
+            c_size = len(compressed)
+            
+            # If we met the target size, we can stop and return this
+            if c_size <= target_size:
+                return compressed
+                
+            # Otherwise keep track of the smallest size we achieved
+            if c_size < best_size:
+                best_size = c_size
+                best_data = compressed
+        except Exception:
+            continue
+            
+    # Return the best (smallest) data we achieved if none got below the target,
+    # ensuring it's actually smaller than the original.
+    if best_data is not None and len(best_data) < len(data):
+        return best_data
+    return data
+
+
+def summarize_pdf(pdf_path, mode: str = "medium") -> str:
+    """
+    Summarize a PDF using Google Gemini AI.
+    Falls back to a basic local extraction if no GEMINI_API_KEY is set.
+    Supports modes: 'short', 'medium', and 'detailed'.
+    """
+    import os
+    import fitz
+
+    mode = mode.lower()
+    if mode not in ("short", "medium", "detailed"):
+        mode = "medium"
+
+    # Extract text from PDF
+    doc = fitz.open(str(pdf_path))
+    pages_text = []
+    for page_idx, page in enumerate(doc):
+        text = page.get_text().strip()
+        if text:
+            pages_text.append(f"--- Page {page_idx + 1} ---\n{text}")
+    doc.close()
+
+    full_text = "\n\n".join(pages_text)
+    if not full_text.strip():
+        return "# Summary\n\nThe document does not contain sufficient readable text for summarization."
+
+    # Truncate to ~30k chars to fit Gemini context limits comfortably
+    if len(full_text) > 30000:
+        full_text = full_text[:30000] + "\n\n[... Document truncated for processing ...]"
+
+    openrouter_error = None
+    groq_error = None
+    openai_error = None
+    gemini_error = None
+
+    # Try OpenRouter API first
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if openrouter_key and openrouter_key != "your-openrouter-api-key-here":
+        try:
+            summary = _summarize_with_openrouter(full_text, mode, openrouter_key)
+            return summary
+        except Exception as exc:
+            openrouter_error = str(exc)
+            logger.warning(f"OpenRouter summarization failed: {exc}, trying Groq/OpenAI/Gemini/local fallbacks...")
+
+    # Try Groq API next
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if groq_key and groq_key != "your-groq-api-key-here":
+        try:
+            summary = _summarize_with_groq(full_text, mode, groq_key)
+            return summary
+        except Exception as exc:
+            groq_error = str(exc)
+            logger.warning(f"Groq summarization failed: {exc}, trying OpenAI/Gemini/local fallbacks...")
+
+    # Try OpenAI API next
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if openai_key and openai_key != "your-openai-api-key-here":
+        try:
+            summary = _summarize_with_openai(full_text, mode, openai_key)
+            return summary
+        except Exception as exc:
+            openai_error = str(exc)
+            logger.warning(f"OpenAI summarization failed: {exc}, trying Gemini/local fallbacks...")
+
+    # Try Gemini API next
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+    if api_key and api_key != "your-gemini-api-key-here":
+        try:
+            summary = _summarize_with_gemini(full_text, mode, api_key)
+            # If it fell back to local inside the helper, it will mention "Local analysis" or "Fallback"
+            if "Local analysis" not in summary:
+                return summary
+        except Exception as exc:
+            gemini_error = str(exc)
+            logger.warning(f"Gemini API call failed: {exc}")
+
+    # Fallback to local
+    local_summary = _summarize_local(full_text, mode)
+
+    # Append any API errors to help the user debug their keys
+    error_notes = []
+    if openrouter_key and openrouter_key != "your-openrouter-api-key-here":
+        error_notes.append(f"- **OpenRouter API error:** `{openrouter_error or 'Unknown error or empty response'}`")
+    if groq_key and groq_key != "your-groq-api-key-here":
+        error_notes.append(f"- **Groq API error:** `{groq_error or 'Unknown error or empty response'}`")
+    if openai_key and openai_key != "your-openai-api-key-here":
+        error_notes.append(f"- **OpenAI API error:** `{openai_error or 'Unknown error or empty response'}`")
+    if api_key and api_key != "your-gemini-api-key-here":
+        error_notes.append(f"- **Gemini API error:** `{gemini_error or 'Unknown error or empty response'}`")
+
+    if error_notes:
+        err_msg = "\n\n---\n### ⚠️ AI API Key Issues Detected\nAI APIs failed to generate a summary. Falling back to the local text-processing engine. Please check your keys or usage limits:\n" + "\n".join(error_notes)
+        return local_summary + err_msg
+
+    return local_summary
+
+
+def _summarize_with_openrouter(text: str, mode: str, api_key: str) -> str:
+    """Use OpenRouter API (via OpenAI SDK compatibility) to generate an intelligent summary."""
+    import openai
+
+    mode_instructions = {
+        "short": """Generate a SHORT executive summary (2-3 paragraphs max).
+Include:
+- A brief overview paragraph
+- 3-5 key bullet points
+- Any critical dates, figures, or names mentioned
+Keep it concise and to the point.""",
+
+        "medium": """Generate a MEDIUM-length summary.
+Include:
+- An executive overview (2-3 paragraphs)
+- 6-10 key insights as bullet points
+- Section-by-section breakdown if the document has clear sections
+- Important dates, figures, monetary values, and percentages
+- Key names, organizations, and entities mentioned
+- Any action items or next steps found""",
+
+        "detailed": """Generate a DETAILED comprehensive summary.
+Include:
+- A thorough executive overview (3-5 paragraphs)
+- 12-20 key insights as bullet points covering all major topics
+- Complete section-by-section summaries preserving the document structure
+- ALL important dates, deadlines, and timelines
+- ALL monetary figures, percentages, and key metrics
+- ALL names, organizations, titles, and contact information
+- ALL action items, obligations, requirements, and next steps
+- Any legal terms, conditions, or compliance requirements
+- Technical specifications or data points if present"""
+    }
+
+    prompt = f"""You are a professional document analyst. Analyze the following PDF document text and produce a structured summary in clean Markdown format.
+
+{mode_instructions[mode]}
+
+Format your response as clean Markdown with:
+- Use # for the main title "Document Summary"
+- Use ## for major sections (Overview, Key Insights, Section Summaries, Important Dates, Key Figures, Names & Organizations, Action Items)
+- Use ### for subsections
+- Use bullet points (- ) for lists
+- Use checkbox format (- [ ] ) for action items
+- Use **bold** for emphasis on critical information
+- Use *italics* for document metadata
+
+IMPORTANT: Only include information that is actually present in the document. Do not fabricate or assume any information.
+
+Here is the document text:
+
+{text}"""
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
+    response = client.chat.completions.create(
+        model="google/gemini-2.5-flash",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        max_tokens=3000,
+        temperature=0.3
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _summarize_with_groq(text: str, mode: str, api_key: str) -> str:
+    """Use Groq API (via OpenAI SDK compatibility) to generate an intelligent summary."""
+    import openai
+
+    mode_instructions = {
+        "short": """Generate a SHORT executive summary (2-3 paragraphs max).
+Include:
+- A brief overview paragraph
+- 3-5 key bullet points
+- Any critical dates, figures, or names mentioned
+Keep it concise and to the point.""",
+
+        "medium": """Generate a MEDIUM-length summary.
+Include:
+- An executive overview (2-3 paragraphs)
+- 6-10 key insights as bullet points
+- Section-by-section breakdown if the document has clear sections
+- Important dates, figures, monetary values, and percentages
+- Key names, organizations, and entities mentioned
+- Any action items or next steps found""",
+
+        "detailed": """Generate a DETAILED comprehensive summary.
+Include:
+- A thorough executive overview (3-5 paragraphs)
+- 12-20 key insights as bullet points covering all major topics
+- Complete section-by-section summaries preserving the document structure
+- ALL important dates, deadlines, and timelines
+- ALL monetary figures, percentages, and key metrics
+- ALL names, organizations, titles, and contact information
+- ALL action items, obligations, requirements, and next steps
+- Any legal terms, conditions, or compliance requirements
+- Technical specifications or data points if present"""
+    }
+
+    prompt = f"""You are a professional document analyst. Analyze the following PDF document text and produce a structured summary in clean Markdown format.
+
+{mode_instructions[mode]}
+
+Format your response as clean Markdown with:
+- Use # for the main title "Document Summary"
+- Use ## for major sections (Overview, Key Insights, Section Summaries, Important Dates, Key Figures, Names & Organizations, Action Items)
+- Use ### for subsections
+- Use bullet points (- ) for lists
+- Use checkbox format (- [ ] ) for action items
+- Use **bold** for emphasis on critical information
+- Use *italics* for document metadata
+
+IMPORTANT: Only include information that is actually present in the document. Do not fabricate or assume any information.
+
+Here is the document text:
+
+{text}"""
+
+    client = openai.OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _summarize_with_openai(text: str, mode: str, api_key: str) -> str:
+    """Use OpenAI API to generate an intelligent summary."""
+    import openai
+
+    mode_instructions = {
+        "short": """Generate a SHORT executive summary (2-3 paragraphs max).
+Include:
+- A brief overview paragraph
+- 3-5 key bullet points
+- Any critical dates, figures, or names mentioned
+Keep it concise and to the point.""",
+
+        "medium": """Generate a MEDIUM-length summary.
+Include:
+- An executive overview (2-3 paragraphs)
+- 6-10 key insights as bullet points
+- Section-by-section breakdown if the document has clear sections
+- Important dates, figures, monetary values, and percentages
+- Key names, organizations, and entities mentioned
+- Any action items or next steps found""",
+
+        "detailed": """Generate a DETAILED comprehensive summary.
+Include:
+- A thorough executive overview (3-5 paragraphs)
+- 12-20 key insights as bullet points covering all major topics
+- Complete section-by-section summaries preserving the document structure
+- ALL important dates, deadlines, and timelines
+- ALL monetary figures, percentages, and key metrics
+- ALL names, organizations, titles, and contact information
+- ALL action items, obligations, requirements, and next steps
+- Any legal terms, conditions, or compliance requirements
+- Technical specifications or data points if present"""
+    }
+
+    prompt = f"""You are a professional document analyst. Analyze the following PDF document text and produce a structured summary in clean Markdown format.
+
+{mode_instructions[mode]}
+
+Format your response as clean Markdown with:
+- Use # for the main title "Document Summary"
+- Use ## for major sections (Overview, Key Insights, Section Summaries, Important Dates, Key Figures, Names & Organizations, Action Items)
+- Use ### for subsections
+- Use bullet points (- ) for lists
+- Use checkbox format (- [ ] ) for action items
+- Use **bold** for emphasis on critical information
+- Use *italics* for document metadata
+
+IMPORTANT: Only include information that is actually present in the document. Do not fabricate or assume any information.
+
+Here is the document text:
+
+{text}"""
+
+    client = openai.OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content.strip()
+
+
+def _summarize_with_gemini(text: str, mode: str, api_key: str) -> str:
+    """Use Google Gemini AI to generate an intelligent summary."""
+
+    mode_instructions = {
+        "short": """Generate a SHORT executive summary (2-3 paragraphs max).
+Include:
+- A brief overview paragraph
+- 3-5 key bullet points
+- Any critical dates, figures, or names mentioned
+Keep it concise and to the point.""",
+
+        "medium": """Generate a MEDIUM-length summary.
+Include:
+- An executive overview (2-3 paragraphs)
+- 6-10 key insights as bullet points
+- Section-by-section breakdown if the document has clear sections
+- Important dates, figures, monetary values, and percentages
+- Key names, organizations, and entities mentioned
+- Any action items or next steps found""",
+
+        "detailed": """Generate a DETAILED comprehensive summary.
+Include:
+- A thorough executive overview (3-5 paragraphs)
+- 12-20 key insights as bullet points covering all major topics
+- Complete section-by-section summaries preserving the document structure
+- ALL important dates, deadlines, and timelines
+- ALL monetary figures, percentages, and key metrics
+- ALL names, organizations, titles, and contact information
+- ALL action items, obligations, requirements, and next steps
+- Any legal terms, conditions, or compliance requirements
+- Technical specifications or data points if present"""
+    }
+
+    prompt = f"""You are a professional document analyst. Analyze the following PDF document text and produce a structured summary in clean Markdown format.
+
+{mode_instructions[mode]}
+
+Format your response as clean Markdown with:
+- Use # for the main title "Document Summary"
+- Use ## for major sections (Overview, Key Insights, Section Summaries, Important Dates, Key Figures, Names & Organizations, Action Items)
+- Use ### for subsections
+- Use bullet points (- ) for lists
+- Use checkbox format (- [ ] ) for action items
+- Use **bold** for emphasis on critical information
+- Use *italics* for document metadata
+
+IMPORTANT: Only include information that is actually present in the document. Do not fabricate or assume any information.
+
+Here is the document text:
+
+{text}"""
+
+    # Try the google-generativeai SDK first
+    try:
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+
+        # Handle safety-blocked or empty responses
+        if response.candidates:
+            candidate = response.candidates[0]
+            if candidate.content and candidate.content.parts:
+                result = candidate.content.parts[0].text
+                if result and result.strip():
+                    return result.strip()
+            # Check if blocked by safety
+            if hasattr(candidate, 'finish_reason'):
+                finish = str(candidate.finish_reason)
+                if "SAFETY" in finish.upper():
+                    logger.warning(f"Gemini response blocked by safety filter: {finish}")
+                    return _summarize_local(text, mode)
+
+        # Fallback: try .text property directly
+        if hasattr(response, 'text') and response.text:
+            return response.text.strip()
+
+        logger.warning("Gemini returned empty response, falling back to local")
+        return _summarize_local(text, mode)
+
+    except ImportError:
+        logger.warning("google-generativeai not installed, trying REST API")
+    except Exception as exc:
+        logger.warning(f"Gemini SDK call failed: {exc}")
+
+    # Fallback: direct REST API call
+    try:
+        import urllib.request
+        import json as json_mod
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+        payload = json_mod.dumps({
+            "contents": [{"parts": [{"text": prompt}]}]
+        }).encode("utf-8")
+
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json_mod.loads(resp.read().decode("utf-8"))
+
+        candidates = data.get("candidates", [])
+        if candidates:
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if parts and parts[0].get("text", "").strip():
+                return parts[0]["text"].strip()
+
+        logger.warning("Gemini REST API returned empty response, falling back to local")
+        return _summarize_local(text, mode)
+
+    except Exception as exc:
+        logger.warning(f"Gemini REST API call also failed: {exc}, falling back to local summarization")
+        return _summarize_local(text, mode)
+
+
+def _summarize_local(full_text: str, mode: str) -> str:
+    """Fallback local NLP summarizer using word-frequency sentence ranking."""
+    import re
+    import collections
+
+    # Clean text helper
+    def clean_sentences(text_content):
+        raw_sents = re.split(r'(?<=[.!?])\s+', text_content)
+        cleaned = []
+        for s in raw_sents:
+            s_clean = s.strip().replace("\n", " ")
+            s_clean = re.sub(r'\s+', ' ', s_clean)
+            if len(s_clean) > 20 and not s_clean.startswith("[") and not s_clean.startswith("---"):
+                cleaned.append(s_clean)
+        return cleaned
+
+    all_sentences = clean_sentences(full_text)
+    if not all_sentences:
+        return "# Summary\n\nThe document does not contain sufficient readable text for summarization."
+
+    # Word frequency scoring
+    stopwords = {
+        "the", "a", "an", "and", "or", "but", "if", "then", "else", "when", "at", "by", "for",
+        "with", "about", "against", "between", "into", "through", "during", "before", "after",
+        "above", "below", "to", "from", "up", "down", "in", "out", "on", "off", "over", "under",
+        "again", "further", "once", "here", "there", "all", "any", "both", "each", "few", "more",
+        "most", "other", "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than",
+        "too", "very", "can", "will", "just", "don", "should", "now", "is", "was", "were",
+        "be", "been", "being", "have", "has", "had", "having", "do", "does", "did", "doing",
+        "page", "this", "that", "these", "those", "which", "who", "whom", "what", "where",
+    }
+
+    words = re.findall(r'\b[a-z]{3,}\b', full_text.lower())
+    freq = collections.Counter(w for w in words if w not in stopwords)
+
+    def score_sentence(sent):
+        s_words = re.findall(r'\b[a-z]{3,}\b', sent.lower())
+        if not s_words:
+            return 0
+        return sum(freq[w] for w in s_words) / len(s_words)
+
+    scored = [(s, score_sentence(s)) for s in all_sentences]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    # Mode-based counts
+    counts = {
+        "short":    (3, 5),
+        "medium":   (5, 10),
+        "detailed": (8, 18),
+    }
+    n_exec, n_bullets = counts.get(mode, counts["medium"])
+
+    md = ["# Document Summary", f"*Mode: {mode.capitalize()} · Local analysis (no AI API key configured)*\n"]
+
+    md.append("## Overview")
+    top = scored[:n_exec]
+    top.sort(key=lambda x: all_sentences.index(x[0]))
+    md.append(" ".join(s[0] for s in top))
+    md.append("")
+
+    md.append("## Key Insights")
+    for s, _ in scored[n_exec:n_exec + n_bullets]:
+        md.append(f"- {s}")
+    md.append("")
+
+    # Extract dates, figures
+    dates = sorted(set(re.findall(r'\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b', full_text, re.I)))
+    dates += sorted(set(re.findall(r'\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b', full_text)))
+    figures = sorted(set(re.findall(r'\$[\d,]+(?:\.\d+)?(?:\s*(?:million|billion|trillion))?', full_text, re.I)))
+    figures += sorted(set(re.findall(r'\b\d+(?:\.\d+)?%', full_text)))
+
+    if dates:
+        md.append("## Important Dates")
+        for d in dates[:10]:
+            md.append(f"- {d}")
+        md.append("")
+    if figures:
+        md.append("## Key Figures")
+        for f in figures[:10]:
+            md.append(f"- {f}")
+        md.append("")
+
+    return "\n".join(md)
+
+
+def markdown_to_pdf(md_text: str, output_path: str, source_filename: str = "document.pdf"):
+    """Generate a stylized PDF from Markdown text using ReportLab, including running header/footer watermarks."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    import re
+    import datetime
+
+    # Clean the source filename
+    clean_source = source_filename
+    if clean_source.endswith("_summary.pdf"):
+        clean_source = clean_source[:-12] + ".pdf"
+    elif clean_source.endswith("_summary"):
+        clean_source = clean_source[:-8] + ".pdf"
+    elif not clean_source.lower().endswith(".pdf"):
+        clean_source = clean_source + ".pdf"
+
+    def draw_header_footer(canvas, doc):
+        canvas.saveState()
+        # Header text
+        canvas.setFont('Helvetica-Bold', 7.5)
+        canvas.setFillColor(colors.HexColor('#9ca3af')) # gray-400
+        canvas.drawString(54, 745, "QT PDF STUDIO — SUMMARY REPORT")
+        
+        # Header date
+        date_str = datetime.date.today().strftime("%m/%d/%Y")
+        canvas.setFont('Helvetica', 7.5)
+        canvas.drawRightString(doc.pagesize[0] - 54, 745, date_str)
+        
+        # Header line
+        canvas.setStrokeColor(colors.HexColor('#e5e7eb')) # gray-200
+        canvas.setLineWidth(0.5)
+        canvas.line(54, 735, doc.pagesize[0] - 54, 735)
+        
+        # Footer line
+        canvas.line(54, 60, doc.pagesize[0] - 54, 60)
+        
+        # Footer source name
+        canvas.setFont('Helvetica', 7.5)
+        canvas.setFillColor(colors.HexColor('#4b5563')) # gray-600
+        canvas.drawString(54, 46, f"Source: {clean_source}")
+        
+        # Footer page number
+        canvas.setFont('Helvetica-Bold', 7.5)
+        canvas.drawRightString(doc.pagesize[0] - 54, 46, "PAGE 1 OF 1")
+        canvas.restoreState()
+
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=letter,
+        rightMargin=54, leftMargin=54,
+        topMargin=72, bottomMargin=72
+    )
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    h1_style = ParagraphStyle(
+        'H1',
+        parent=styles['Heading1'],
+        fontSize=20,
+        leading=24,
+        textColor=colors.HexColor('#4f46e5'), # Brand Indigo
+        spaceAfter=15,
+        spaceBefore=10
+    )
+    h2_style = ParagraphStyle(
+        'H2',
+        parent=styles['Heading2'],
+        fontSize=13,
+        leading=17,
+        textColor=colors.HexColor('#1f2937'), # Gray-800
+        spaceAfter=8,
+        spaceBefore=12
+    )
+    body_style = ParagraphStyle(
+        'Body',
+        parent=styles['Normal'],
+        fontSize=9.5,
+        leading=13.5,
+        textColor=colors.HexColor('#374151'), # Gray-700
+        spaceAfter=6
+    )
+    bullet_style = ParagraphStyle(
+        'Bullet',
+        parent=body_style,
+        leftIndent=20,
+        firstLineIndent=-10,
+        spaceAfter=4
+    )
+
+    story = []
+
+    lines = md_text.split('\n')
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            story.append(Spacer(1, 8))
+            continue
+            
+        # Clean formatting (bold: **text** -> <b>text</b>, italic: *text* -> <i>text</i>)
+        line_str = re.sub(r'\*\*(.*?)\*\*|__(.*?)__', r'<b>\1\2</b>', line_str)
+        line_str = re.sub(r'\*(.*?)\*|_(.*?)_', r'<i>\1\2</i>', line_str)
+
+        # Parse tags
+        if line.startswith('# '):
+            text = line[2:].strip()
+            story.append(Paragraph(text, h1_style))
+        elif line.startswith('## '):
+            text = line[3:].strip()
+            story.append(Paragraph(text, h2_style))
+        elif line.startswith('### '):
+            text = line[4:].strip()
+            mini_style = ParagraphStyle('Mini', parent=h2_style, fontSize=11, leading=14, textColor=colors.HexColor('#4f46e5'), spaceBefore=8, spaceAfter=4)
+            story.append(Paragraph(text, mini_style))
+        elif line.startswith('- [ ] ') or line.startswith('- [x] '):
+            checked = line.startswith('- [x] ')
+            box = "[X]" if checked else "[ ]"
+            text = f"<font color='#4f46e5'><b>{box}</b></font> " + line[6:].strip()
+            story.append(Paragraph(text, bullet_style))
+        elif line.startswith('- ') or line.startswith('* '):
+            text = "<font color='#4f46e5'><b>•</b></font> " + line[2:].strip()
+            story.append(Paragraph(text, bullet_style))
+        else:
+            story.append(Paragraph(line_str, body_style))
+
+    doc.build(story, onFirstPage=draw_header_footer, onLaterPages=draw_header_footer)
+
+
+def markdown_to_docx(md_text: str, output_path: str, source_filename: str = "document.pdf"):
+    """Generate a stylized Word Document (DOCX) from Markdown text using python-docx, including headers/footers."""
+    import docx
+    import re
+    from docx.shared import Pt, RGBColor
+    import datetime
+
+    # Clean the source filename
+    clean_source = source_filename
+    if clean_source.endswith("_summary.docx"):
+        clean_source = clean_source[:-13] + ".pdf"
+    elif clean_source.endswith("_summary"):
+        clean_source = clean_source[:-8] + ".pdf"
+    elif not clean_source.lower().endswith(".pdf"):
+        clean_source = clean_source + ".pdf"
+
+    doc = docx.Document()
+    
+    # Configure default normal style
+    style_normal = doc.styles['Normal']
+    font = style_normal.font
+    font.name = 'Arial'
+    font.size = Pt(10.5)
+    font.color.rgb = RGBColor(0x37, 0x41, 0x51) # Gray-700
+    
+    # Configure Header and Footer in Section
+    section = doc.sections[0]
+    
+    # Header
+    header = section.header
+    hp = header.paragraphs[0]
+    hp.text = "" # Reset default paragraph
+    hp.paragraph_format.space_after = Pt(8)
+    date_str = datetime.date.today().strftime("%m/%d/%Y")
+    hrun = hp.add_run(f"QT PDF STUDIO — SUMMARY REPORT\t\t{date_str}")
+    hrun.font.name = 'Arial'
+    hrun.font.size = Pt(7.5)
+    hrun.font.bold = True
+    hrun.font.color.rgb = RGBColor(0x9c, 0xa3, 0xaf) # gray-400
+    
+    # Footer
+    footer = section.footer
+    fp = footer.paragraphs[0]
+    fp.text = "" # Reset default paragraph
+    fp.paragraph_format.space_before = Pt(8)
+    frun = fp.add_run(f"Source: {clean_source}\t\tPAGE 1 OF 1")
+    frun.font.name = 'Arial'
+    frun.font.size = Pt(7.5)
+    frun.font.bold = True
+    frun.font.color.rgb = RGBColor(0x4b, 0x55, 0x63) # gray-600
+    
+    lines = md_text.split('\n')
+    for line in lines:
+        line_str = line.strip()
+        if not line_str:
+            continue
+            
+        # Parse headings
+        if line.startswith('# '):
+            heading_text = line[2:].strip()
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(16)
+            p.paragraph_format.space_after = Pt(10)
+            run = p.add_run(heading_text)
+            run.font.name = 'Arial'
+            run.font.size = Pt(18)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0x4f, 0x46, 0xe5) # Brand Indigo
+        elif line.startswith('## '):
+            heading_text = line[3:].strip()
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(12)
+            p.paragraph_format.space_after = Pt(6)
+            run = p.add_run(heading_text)
+            run.font.name = 'Arial'
+            run.font.size = Pt(13)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0x1f, 0x29, 0x37) # Gray-800
+        elif line.startswith('### '):
+            heading_text = line[4:].strip()
+            p = doc.add_paragraph()
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after = Pt(4)
+            run = p.add_run(heading_text)
+            run.font.name = 'Arial'
+            run.font.size = Pt(11)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0x4f, 0x46, 0xe5) # Brand Indigo
+        else:
+            is_bullet = False
+            is_checkbox = False
+            checked = False
+            
+            if line.startswith('- [ ] ') or line.startswith('- [x] '):
+                is_checkbox = True
+                checked = line.startswith('- [x] ')
+                line_str = line[6:].strip()
+            elif line.startswith('- ') or line.startswith('* '):
+                is_bullet = True
+                line_str = line[2:].strip()
+            
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(5)
+            
+            if is_checkbox:
+                box_run = p.add_run("[X]  " if checked else "[ ]  ")
+                box_run.bold = True
+                box_run.font.color.rgb = RGBColor(0x4f, 0x46, 0xe5)
+            elif is_bullet:
+                bullet_run = p.add_run("•  ")
+                bullet_run.bold = True
+                bullet_run.font.color.rgb = RGBColor(0x4f, 0x46, 0xe5)
+                
+            # Parse bold/italic
+            parts = re.split(r'(\*\*.*?\*\*|__.*?__|\*.*?\*|_.*?_)', line_str)
+            for part in parts:
+                if not part:
+                    continue
+                if (part.startswith('**') and part.endswith('**')) or (part.startswith('__') and part.endswith('__')):
+                    text_content = part[2:-2]
+                    run = p.add_run(text_content)
+                    run.bold = True
+                elif (part.startswith('*') and part.endswith('*')) or (part.startswith('_') and part.endswith('_')):
+                    text_content = part[1:-1]
+                    run = p.add_run(text_content)
+                    run.italic = True
+                else:
+                    p.add_run(part)
+                    
+    doc.save(output_path)
+
+
+

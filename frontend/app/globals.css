@@ -440,17 +440,41 @@ body {
 
 .topbar {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 0 12px;
+  min-height: 46px;
   background: var(--e-bg1);
   border-bottom: 1px solid var(--e-stroke);
   flex: none;
 }
 
+/* left and right rails both flex:1 — that is what optically centres .tb-center */
+.tb-left,
+.tb-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.tb-right {
+  justify-content: flex-end;
+}
+
+.tb-center {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 1 auto;
+  min-width: 0;
+  padding: 0 12px;
+}
+
 .topbar .fname {
   font-weight: 600;
-  max-width: 320px;
+  max-width: 340px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -473,63 +497,268 @@ body {
   gap: 5px;
 }
 
-.toolbar {
+/* Google-Docs-style toolbar: one flat pill row, no tabs, no group captions */
+.tbar-wrap {
   display: flex;
-  align-items: center;
-  gap: 4px;
+  justify-content: center;
   padding: 6px 12px;
-  background: var(--e-bg1);
+  background: var(--e-bg0);
   border-bottom: 1px solid var(--e-stroke);
   flex: none;
-  overflow-x: auto;
-  min-height: 46px;
 }
 
-.tool-group {
+.tbar {
   display: flex;
   align-items: center;
   gap: 2px;
+  max-width: 100%;
+  padding: 4px 8px;
+  border-radius: 22px;
+  background: var(--e-bg2);
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
-.tool-btn {
+.tbar::-webkit-scrollbar {
+  display: none;
+}
+
+.tb-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  gap: 3px;
+  height: 30px;
+  min-width: 30px;
+  padding: 0 6px;
+  border: none;
   border-radius: var(--e-radius-sm);
-  border: 1px solid transparent;
   background: transparent;
-  color: var(--e-muted);
+  color: var(--e-text);
   cursor: pointer;
-  position: relative;
+  font-family: inherit;
+  font-size: 13px;
   flex: none;
 }
 
-.tool-btn:hover {
-  background: var(--e-bg2);
-  color: var(--e-text);
+.tb-btn:hover {
+  background: var(--e-bg3);
 }
 
-.tool-btn.active {
+.tb-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.tb-btn:disabled:hover {
+  background: transparent;
+}
+
+.tb-btn.active {
   background: var(--e-accent-soft);
   color: var(--e-accent);
-  border-color: rgba(91, 140, 255, 0.4);
 }
 
-.ctx-strip {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 4px;
-  color: var(--e-muted);
-  font-size: 12.5px;
+.tb-lbl {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tb-caret {
+  opacity: 0.6;
   flex: none;
 }
 
-.ctx-strip .cs-label {
-  color: var(--e-faint);
-  font-size: 12px;
+.tb-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 5px;
+  background: var(--e-stroke);
+  flex: none;
+}
+
+.tb-size {
+  width: 42px;
+  height: 26px;
+  text-align: center;
+  border: 1px solid var(--e-stroke);
+  border-radius: var(--e-radius-sm);
+  background: var(--e-bg0);
+  color: var(--e-text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  flex: none;
+  -moz-appearance: textfield;
+}
+
+.tb-size::-webkit-outer-spin-button,
+.tb-size::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.tb-size:focus {
+  border-color: var(--e-accent);
+}
+
+.tbar .input {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+}
+
+.tb-menu {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+}
+
+/* colour button: glyph sitting over a live colour bar */
+.tb-color {
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 5px;
+}
+
+.tb-color-bar {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--e-text);
+}
+
+.tb-color-bar.none {
+  background: repeating-linear-gradient(90deg, #888 0 3px, #444 3px 6px);
+}
+
+/* dropdown panel — fixed, so the horizontally scrolling toolbar cannot clip it */
+.tb-pop {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--e-bg2);
+  border: 1px solid var(--e-stroke);
+  border-radius: var(--e-radius-sm);
+  box-shadow: var(--e-shadow);
+}
+
+/* Font-picker panel: makes long font lists scrollable */
+.font-picker-pop {
+  max-height: 320px;
+  overflow-y: auto;
+}
+.font-picker-pop::-webkit-scrollbar { width: 5px; }
+.font-picker-pop::-webkit-scrollbar-track { background: transparent; }
+.font-picker-pop::-webkit-scrollbar-thumb {
+  background: var(--e-stroke);
+  border-radius: 3px;
+}
+.font-picker-pop::-webkit-scrollbar-thumb:hover { background: var(--e-stroke2); }
+
+.tb-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: none;
+  border-radius: var(--e-radius-sm);
+  background: transparent;
+  color: var(--e-text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.tb-item:hover {
+  background: var(--e-bg3);
+}
+
+.tb-item:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.tb-item:disabled:hover {
+  background: transparent;
+}
+
+.tb-item.active {
+  color: var(--e-accent);
+  background: var(--e-accent-soft);
+}
+
+.tb-item-ico {
+  display: inline-flex;
+  width: 16px;
+  justify-content: center;
+  flex: none;
+}
+
+.tb-item-sep {
+  height: 1px;
+  margin: 5px 2px;
+  background: var(--e-stroke);
+}
+
+.tb-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 9px;
+  color: var(--e-muted);
+  font-size: 12.5px;
+}
+
+/* fixed, not absolute: .tbar scrolls horizontally (overflow-x:auto also forces
+   overflow-y:auto), which would clip an absolutely-positioned panel.
+   top/left are set inline from the button's viewport rect. */
+.rbn-cdd-pop {
+  position: fixed;
+  z-index: 60;
+  display: grid;
+  grid-template-columns: repeat(10, 18px);
+  gap: 4px;
+  padding: 8px;
+  background: var(--e-bg2);
+  border: 1px solid var(--e-stroke);
+  border-radius: var(--e-radius-sm);
+  box-shadow: var(--e-shadow);
+}
+
+.rbn-cdd-pop .swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+}
+
+/* "More…" spans the grid: a native colour input for anything off-palette */
+.rbn-cdd-more {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--e-stroke);
+  color: var(--e-muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.rbn-cdd-more input[type="color"] {
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--e-stroke);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
 }
 
 .swatch-row {
@@ -920,6 +1149,18 @@ input[type="checkbox"].form-field {
 .text-block-hit:hover {
   border-color: var(--e-accent);
   background: rgba(91, 140, 255, .08);
+}
+
+/* In select-tool mode: show a faint border on all text blocks at rest,
+   accent on hover — same visual language as Adobe Acrobat / ilovepdf */
+.text-block-hit.select-mode {
+  border-color: rgba(91, 140, 255, 0.25);
+}
+.text-block-hit.select-mode:hover {
+  border-color: var(--e-accent);
+  background: rgba(91, 140, 255, 0.10);
+  outline: 1px solid rgba(91, 140, 255, 0.4);
+  outline-offset: 0px;
 }
 
 .annot-item {
@@ -1478,20 +1719,13 @@ input[type="checkbox"].form-field {
     margin-left: 0 !important;
   }
 
-  .toolbar {
-    padding: 6px 10px;
-    gap: 4px;
-    overflow-x: auto;
-    white-space: nowrap;
-    scrollbar-width: none;
+  .tbar-wrap {
+    padding: 5px 8px;
   }
 
-  .toolbar::-webkit-scrollbar {
-    display: none;
-  }
-
-  .ctx-strip .cs-label {
-    display: none;
+  .tbar {
+    border-radius: 18px;
+    padding: 3px 6px;
   }
 
   .statusbar {

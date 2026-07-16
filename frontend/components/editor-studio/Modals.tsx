@@ -1,7 +1,8 @@
 "use client";
 import {
-  ArrowDown, ArrowUp, FileImage, FileText, Loader2, PenTool, Type, X,
+  ArrowDown, ArrowUp, FileImage, FileText, Loader2, PenTool, Presentation, Type, X,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useEditor } from "@/lib/store";
@@ -45,7 +46,7 @@ function Shell({ title, children, foot }: {
 function ExportModal() {
   const s = useEditor();
   const pages = s.meta?.pages ?? 1;
-  const [format, setFormat] = useState<"pdf" | "png" | "jpg">("pdf");
+  const [format, setFormat] = useState<"pdf" | "docx" | "pptx" | "png" | "jpg">("pdf");
   const [scope, setScope] = useState<"all" | "current" | "custom">("all");
   const [ranges, setRanges] = useState("");
   const [dpi, setDpi] = useState(150);
@@ -74,6 +75,12 @@ function ExportModal() {
     }
   };
 
+  const getIcon = (f: string) => {
+    if (f === "pdf" || f === "docx") return <FileText size={19} />;
+    if (f === "pptx") return <Presentation size={19} />;
+    return <FileImage size={19} />;
+  };
+
   return (
     <Shell
       title="Export"
@@ -87,10 +94,10 @@ function ExportModal() {
       }
     >
       <div className="radio-cards">
-        {(["pdf", "png", "jpg"] as const).map((f) => (
+        {(["pdf", "docx", "pptx", "png", "jpg"] as const).map((f) => (
           <button key={f} className={`radio-card ${format === f ? "active" : ""}`}
             onClick={() => setFormat(f)}>
-            {f === "pdf" ? <FileText size={19} /> : <FileImage size={19} />}
+            {getIcon(f)}
             {f.toUpperCase()}
           </button>
         ))}
@@ -111,7 +118,7 @@ function ExportModal() {
             onChange={(e) => setRanges(e.target.value)} autoFocus />
         </label>
       )}
-      {format !== "pdf" && (
+      {(format === "png" || format === "jpg") && (
         <label className="field">
           <span>Image quality</span>
           <select className="select" value={dpi} onChange={(e) => setDpi(Number(e.target.value))}>
@@ -122,9 +129,10 @@ function ExportModal() {
         </label>
       )}
       <div style={{ color: "var(--faint)", fontSize: 12, lineHeight: 1.5 }}>
-        {format === "pdf"
-          ? "Exports the selected pages as a PDF download. Unsaved edits are saved first."
-          : "Multiple pages are downloaded as a ZIP of images. Unsaved edits are saved first."}
+        {format === "pdf" && "Exports the selected pages as a PDF download. Unsaved edits are saved first."}
+        {format === "docx" && "Converts and exports the selected pages as an editable Word document (.docx)."}
+        {format === "pptx" && "Exports the selected pages as a PowerPoint presentation (.pptx)."}
+        {(format === "png" || format === "jpg") && "Multiple pages are downloaded as a ZIP of images. Unsaved edits are saved first."}
       </div>
       {err && <div style={{ color: "var(--danger)", marginTop: 10 }}>{err}</div>}
     </Shell>
@@ -182,7 +190,7 @@ function SplitModal() {
               <FileText size={15} style={{ flex: "none", color: "var(--accent)" }} />
               <span className="mr-name">{f.name}</span>
               <span className="mr-pages">{f.pages} pages</span>
-              <a className="btn small" href={`/editor?id=${f.id}`}>Open</a>
+              <Link className="btn small" href={`/editor/${f.id}`} onClick={() => s.set({ modal: null })}>Open</Link>
             </div>
           ))}
         </>
@@ -238,7 +246,7 @@ function MergeModal() {
       const meta = await api.merge(order, name);
       s.set({ modal: null });
       s.toast(`Merged ${order.length} documents into "${meta.name}"`, "success");
-      window.location.href = `/editor?id=${meta.id}`;
+      window.location.href = `/editor/${meta.id}`;
     } catch (e: any) {
       setErr(e.message);
     } finally {

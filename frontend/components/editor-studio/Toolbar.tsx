@@ -1,74 +1,277 @@
 "use client";
 import {
-  ArrowUpRight, Bold, Circle, FormInput, Highlighter, Image as ImageIcon,
-  Italic, Link2, Minus, MousePointer2, Pencil, PenTool, Square, StickyNote,
-  Strikethrough, TextCursorInput, Type, Underline as UnderlineIcon,
+  AlignCenter, AlignJustify, AlignLeft, AlignRight, ArrowUpRight, Baseline,
+  Bold, ChevronDown, ChevronsUpDown, Circle, Droplet, Eraser, FormInput, GitMerge,
+  Highlighter, Image as ImageIcon, Italic, LayoutGrid, Link2, Magnet, Maximize,
+  Minus, MoreHorizontal, MousePointer2, MoveHorizontal, PaintBucket, Palette,
+  Pencil, PenTool, Plus, Redo2, Rows3, Scissors, Shapes, Square, Stamp,
+  StickyNote, Strikethrough, TextCursorInput, Type, Underline as UnderlineIcon,
+  Undo2, File as SinglePageIcon,
 } from "lucide-react";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useEditor } from "@/lib/store";
 import type { Tool } from "@/lib/types";
 import {
   HIGHLIGHT_COLORS, NOTE_COLORS, STROKE_COLORS, TEXT_COLORS,
 } from "@/lib/utils";
+import FontPicker from "./FontPicker";
 
-const TOOLS: { tool: Tool; icon: React.ReactNode; label: string; key: string }[] = [
-  { tool: "select", icon: <MousePointer2 size={17} />, label: "Select / move", key: "V" },
-  { tool: "edit-text", icon: <TextCursorInput size={17} />, label: "Edit text blocks — move, resize, rotate, retype", key: "E" },
-  { tool: "form", icon: <FormInput size={17} />, label: "Fill form fields", key: "F" },
-  { tool: "text", icon: <Type size={17} />, label: "Add text box", key: "T" },
-  { tool: "highlight", icon: <Highlighter size={17} />, label: "Highlight text", key: "H" },
-  { tool: "underline", icon: <UnderlineIcon size={17} />, label: "Underline text", key: "U" },
-  { tool: "strikeout", icon: <Strikethrough size={17} />, label: "Strike through text", key: "S" },
-  { tool: "pen", icon: <Pencil size={17} />, label: "Draw with pen", key: "P" },
-  { tool: "rect", icon: <Square size={17} />, label: "Rectangle", key: "R" },
-  { tool: "ellipse", icon: <Circle size={17} />, label: "Ellipse", key: "O" },
-  { tool: "line", icon: <Minus size={17} />, label: "Line", key: "L" },
-  { tool: "arrow", icon: <ArrowUpRight size={17} />, label: "Arrow", key: "A" },
-  { tool: "image", icon: <ImageIcon size={17} />, label: "Insert image", key: "" },
-  { tool: "sign", icon: <PenTool size={17} />, label: "Sign document", key: "" },
-  { tool: "note", icon: <StickyNote size={17} />, label: "Sticky note", key: "N" },
-  { tool: "link", icon: <Link2 size={17} />, label: "Add hyperlink", key: "K" },
-];
+/**
+ * Google-Docs-style toolbar: one flat row, no tabs and no group captions.
+ * Commands are clustered behind thin dividers, and anything that would need a
+ * second row (shapes, alignment, spacing, zoom, page ops) collapses into a
+ * dropdown instead.
+ */
 
-const GROUP_AFTER = new Set(["select", "text", "strikeout", "pen", "arrow"]);
+const ICO = 16;
+
+const T: Record<Tool, { icon: React.ReactNode; label: string; key: string }> = {
+  select: { icon: <MousePointer2 size={ICO} />, label: "Select", key: "V" },
+  "edit-text": { icon: <TextCursorInput size={ICO} />, label: "Edit text", key: "E" },
+  form: { icon: <FormInput size={ICO} />, label: "Fill form", key: "F" },
+  text: { icon: <Type size={ICO} />, label: "Text box", key: "T" },
+  highlight: { icon: <Highlighter size={ICO} />, label: "Highlight", key: "H" },
+  underline: { icon: <UnderlineIcon size={ICO} />, label: "Underline", key: "U" },
+  strikeout: { icon: <Strikethrough size={ICO} />, label: "Strikethrough", key: "S" },
+  pen: { icon: <Pencil size={ICO} />, label: "Pen", key: "P" },
+  eraser: { icon: <Eraser size={ICO} />, label: "Eraser", key: "X" },
+  rect: { icon: <Square size={ICO} />, label: "Rectangle", key: "R" },
+  ellipse: { icon: <Circle size={ICO} />, label: "Ellipse", key: "O" },
+  line: { icon: <Minus size={ICO} />, label: "Line", key: "L" },
+  arrow: { icon: <ArrowUpRight size={ICO} />, label: "Arrow", key: "A" },
+  image: { icon: <ImageIcon size={ICO} />, label: "Image", key: "" },
+  sign: { icon: <PenTool size={ICO} />, label: "Signature", key: "" },
+  note: { icon: <StickyNote size={ICO} />, label: "Comment", key: "N" },
+  link: { icon: <Link2 size={ICO} />, label: "Link", key: "K" },
+};
+
+const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+const LINE_STEPS = [1, 1.15, 1.5, 2];
 
 export default function Toolbar() {
   const s = useEditor();
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const pickImage = () => fileRef.current?.click();
+  // context: font controls drive the selected text object, else the defaults
+  const sel = s.annots.find((a) => a.id === s.selectedId);
+  const txt = sel && (sel.type === "text" || sel.type === "textblock") ? sel : null;
+  const mk = sel && (sel.type === "highlight" || sel.type === "underline"
+    || sel.type === "strikeout") ? sel : null;
+  const up = (patch: any) => s.updateAnnot((txt ?? mk)!.id, patch, true);
 
+  const size = txt ? txt.fontSize : s.opts.fontSize;
+  const bold = txt ? !!txt.bold : s.opts.bold;
+  const italic = txt ? !!txt.italic : s.opts.italic;
+  const fontColor = txt ? txt.color : s.opts.fontColor;
+  const hlColor = mk ? mk.color : s.opts.highlightColor;
+  const isBlock = txt?.type === "textblock";
+  const alignVal = (txt ? (txt as any).align ?? "left" : s.opts.align) as string;
+  const lineRatio = isBlock
+    ? (txt as any).leading / ((txt as any).fontSize || 1) : 1.15;
+  const nearestLine = LINE_STEPS.reduce(
+    (a, b) => (Math.abs(b - lineRatio) < Math.abs(a - lineRatio) ? b : a), 1.15);
+
+  const setSize = (v: number) => {
+    const n = Math.max(6, Math.min(96, v));
+    txt ? up({ fontSize: n }) : s.setOpts({ fontSize: n });
+  };
+  const setAlign = (al: "left" | "center" | "right" | "justify") => {
+    if (!txt) return s.setOpts({ align: (al === "justify" ? "left" : al) as any });
+    up({ align: txt.type === "textblock" ? al : al === "justify" ? "left" : al });
+  };
+
+  const pickImage = () => fileRef.current?.click();
   const onImageChosen = (file: File) => {
     const reader = new FileReader();
-    reader.onload = () =>
-      useEditor.getState().placeImage(reader.result as string);
+    reader.onload = () => useEditor.getState().placeImage(reader.result as string);
     reader.readAsDataURL(file);
   };
 
+  const fit = (mode: "width" | "page") => {
+    const el = s.stageEl;
+    const dim = s.pageSizes[s.currentPage];
+    if (!el || !dim) return;
+    const availW = el.clientWidth - 72;
+    const availH = el.clientHeight - 56;
+    s.setZoom(mode === "width" ? availW / dim.w
+      : Math.min(availW / dim.w, availH / dim.h));
+  };
+
   return (
-    <div className="toolbar">
-      {TOOLS.map(({ tool, icon, label, key }) => (
-        <span key={tool} style={{ display: "contents" }}>
-          <button
-            className={`tool-btn ${s.tool === tool ? "active" : ""}`}
-            title={key ? `${label} (${key})` : label}
-            onClick={() => {
-              if (tool === "image") { s.setTool("image"); pickImage(); }
-              else if (tool === "sign") s.set({ modal: "sign" });
-              else {
-                if (tool === "form" && !s.formFields.length)
-                  s.toast("This document has no fillable form fields", "info");
-                s.setTool(tool);
-              }
-            }}
-          >
-            {icon}
-          </button>
-          {GROUP_AFTER.has(tool) && <div className="divider-v" />}
-        </span>
-      ))}
-      <div className="divider-v" />
-      <ContextStrip />
+    <div className="tbar-wrap">
+      <div className="tbar">
+        <TBtn icon={<Undo2 size={ICO} />} title="Undo (Ctrl+Z)"
+          disabled={!s.past.length && !s.meta?.can_undo} onClick={() => s.undo()} />
+        <TBtn icon={<Redo2 size={ICO} />} title="Redo (Ctrl+Y)"
+          disabled={!s.future.length && !s.meta?.can_redo} onClick={() => s.redo()} />
+
+        <Sep />
+
+        <Menu title="Zoom" width={150} label={`${Math.round(s.zoom * 100)}%`}>
+          {(close) => (
+            <>
+              {ZOOMS.map((z) => (
+                <MenuItem key={z} label={`${z * 100}%`} active={Math.abs(s.zoom - z) < 0.01}
+                  onClick={() => { s.setZoom(z); close(); }} />
+              ))}
+              <MenuSep />
+              <MenuItem icon={<MoveHorizontal size={15} />} label="Fit width"
+                onClick={() => { fit("width"); close(); }} />
+              <MenuItem icon={<Maximize size={14} />} label="Fit page"
+                onClick={() => { fit("page"); close(); }} />
+            </>
+          )}
+        </Menu>
+
+        <Sep />
+
+        <FontPicker value={txt ? txt.fontFamily : s.opts.fontFamily} width={132}
+          onChange={(v) => (txt ? up({ fontFamily: v }) : s.setOpts({ fontFamily: v }))} />
+
+        <Sep />
+
+        <TBtn icon={<Minus size={ICO} />} title="Decrease font size"
+          onClick={() => setSize(size - 1)} />
+        <input
+          className="tb-size" type="number" min={6} max={96} value={size}
+          onKeyDown={(e) => e.stopPropagation()}
+          onChange={(e) => setSize(Number(e.target.value) || 12)}
+        />
+        <TBtn icon={<Plus size={ICO} />} title="Increase font size"
+          onClick={() => setSize(size + 1)} />
+
+        <Sep />
+
+        <TBtn icon={<Bold size={ICO} />} title="Bold" active={bold}
+          onClick={() => (txt ? up({ bold: !bold }) : s.setOpts({ bold: !bold }))} />
+        <TBtn icon={<Italic size={ICO} />} title="Italic" active={italic}
+          onClick={() => (txt ? up({ italic: !italic }) : s.setOpts({ italic: !italic }))} />
+        <ColorDropdown icon={<Baseline size={ICO} />} title="Text colour"
+          colors={TEXT_COLORS} value={fontColor}
+          onPick={(c) => (txt ? up({ color: c }) : s.setOpts({ fontColor: c! }))} />
+        <ColorDropdown icon={<Droplet size={ICO} />} title="Highlight colour"
+          colors={HIGHLIGHT_COLORS} value={hlColor}
+          onPick={(c) => (mk ? up({ color: c }) : s.setOpts({ highlightColor: c! }))} />
+
+        <Sep />
+
+        <ToolBtn tool="select" />
+        <ToolBtn tool="edit-text" />
+        <ToolBtn tool="text" />
+        <ToolBtn tool="form" />
+
+        <Sep />
+
+        <ToolBtn tool="highlight" />
+        <ToolBtn tool="underline" />
+        <ToolBtn tool="strikeout" />
+
+        <Sep />
+
+        <ToolBtn tool="pen" />
+        <ToolBtn tool="eraser" />
+        <Menu title="Shapes" width={170}
+          icon={<Shapes size={ICO} />}
+          active={["rect", "ellipse", "line", "arrow"].includes(s.tool)}>
+          {(close) => (
+            <>
+              {(["rect", "ellipse", "line", "arrow"] as Tool[]).map((t) => (
+                <MenuItem key={t} icon={T[t].icon} label={T[t].label}
+                  active={s.tool === t}
+                  onClick={() => { s.setTool(t); close(); }} />
+              ))}
+              <MenuSep />
+              <MenuRow label="Stroke">
+                <ColorDropdown icon={<Palette size={15} />} title="Stroke colour"
+                  colors={STROKE_COLORS} value={s.opts.color}
+                  onPick={(c) => s.setOpts({ color: c! })} />
+              </MenuRow>
+              <MenuRow label="Fill">
+                <ColorDropdown icon={<PaintBucket size={15} />} title="Fill colour" allowNone
+                  colors={STROKE_COLORS.slice(0, 6)} value={s.opts.fillColor}
+                  onPick={(c) => s.setOpts({ fillColor: c })} />
+              </MenuRow>
+            </>
+          )}
+        </Menu>
+
+        <Sep />
+
+        <TBtn icon={T.image.icon} title="Insert image" active={s.tool === "image"}
+          onClick={() => { s.setTool("image"); pickImage(); }} />
+        <TBtn icon={T.sign.icon} title="Signature"
+          onClick={() => s.set({ modal: "sign" })} />
+        <ToolBtn tool="note" />
+        <ToolBtn tool="link" />
+
+        <Sep />
+
+        <Menu title="Alignment" width={150}
+          icon={alignVal === "center" ? <AlignCenter size={ICO} />
+            : alignVal === "right" ? <AlignRight size={ICO} />
+              : alignVal === "justify" ? <AlignJustify size={ICO} />
+                : <AlignLeft size={ICO} />}>
+          {(close) => (
+            <>
+              <MenuItem icon={<AlignLeft size={15} />} label="Left" active={alignVal === "left"}
+                onClick={() => { setAlign("left"); close(); }} />
+              <MenuItem icon={<AlignCenter size={15} />} label="Centre" active={alignVal === "center"}
+                onClick={() => { setAlign("center"); close(); }} />
+              <MenuItem icon={<AlignRight size={15} />} label="Right" active={alignVal === "right"}
+                onClick={() => { setAlign("right"); close(); }} />
+              <MenuItem icon={<AlignJustify size={15} />} label="Justify" active={alignVal === "justify"}
+                onClick={() => { setAlign("justify"); close(); }} />
+            </>
+          )}
+        </Menu>
+
+        <Menu title={isBlock ? "Line spacing" : "Line spacing — select a text block"}
+          width={140} icon={<ChevronsUpDown size={ICO} />}>
+          {(close) => (
+            <>
+              {LINE_STEPS.map((r) => (
+                <MenuItem key={r} label={r.toFixed(2).replace(/0$/, "")}
+                  active={isBlock && nearestLine === r}
+                  disabled={!isBlock}
+                  onClick={() => {
+                    if (isBlock) up({ leading: r * (txt as any).fontSize });
+                    close();
+                  }} />
+              ))}
+            </>
+          )}
+        </Menu>
+
+        <Sep />
+
+        <Menu title="More" width={190} icon={<MoreHorizontal size={ICO} />}>
+          {(close) => (
+            <>
+              <MenuItem icon={<Scissors size={15} />} label="Split document…"
+                onClick={() => { s.set({ modal: "split" }); close(); }} />
+              <MenuItem icon={<GitMerge size={15} />} label="Merge documents…"
+                onClick={() => { s.set({ modal: "merge" }); close(); }} />
+              <MenuItem icon={<Stamp size={15} />} label="Add watermark…"
+                onClick={() => { s.set({ modal: "watermark" }); close(); }} />
+              <MenuSep />
+              <MenuItem icon={<Rows3 size={15} />} label="Continuous scroll"
+                active={s.viewMode === "continuous"}
+                onClick={() => { s.set({ viewMode: "continuous" }); close(); }} />
+              <MenuItem icon={<SinglePageIcon size={15} />} label="Single page"
+                active={s.viewMode === "single"}
+                onClick={() => { s.set({ viewMode: "single" }); close(); }} />
+              <MenuSep />
+              <MenuItem icon={<LayoutGrid size={15} />} label="Layout grid"
+                active={s.showGrid}
+                onClick={() => { s.set({ showGrid: !s.showGrid }); close(); }} />
+              <MenuItem icon={<Magnet size={15} />} label="Snap to grid"
+                active={s.snap}
+                onClick={() => { s.set({ snap: !s.snap }); close(); }} />
+            </>
+          )}
+        </Menu>
+      </div>
+
       <input
         ref={fileRef} type="file" accept="image/png,image/jpeg" hidden
         onChange={(e) => {
@@ -81,235 +284,185 @@ export default function Toolbar() {
   );
 }
 
-/* ---- contextual options that follow the active tool / selection ---- */
+/* ------------------------------------------------------------------ pieces */
 
-function ContextStrip() {
-  const s = useEditor();
-  const sel = s.annots.find((a) => a.id === s.selectedId);
-
-  // A live text block gets its own strip (colors/fonts of existing text are
-  // preserved by the engine, so no restyle controls here — just rotation).
-  if (sel?.type === "textblock" && (s.tool === "select" || s.tool === "edit-text")) {
-    return (
-      <div className="ctx-strip">
-        <span className="cs-label">Text block</span>
-        <span className="cs-label">Rotation</span>
-        <input
-          className="input" type="number" step={1} min={-180} max={180}
-          style={{ width: 64, padding: "5px 6px" }}
-          value={Math.round(sel.rotate * 10) / 10}
-          onChange={(e) => s.updateAnnot(sel.id, {
-            rotate: Math.max(-180, Math.min(180, Number(e.target.value) || 0)),
-          } as any, true)}
-        />
-        {sel.rotate !== 0 && (
-          <button className="btn small" onClick={() =>
-            s.updateAnnot(sel.id, { rotate: 0 } as any, true)}>
-            Straighten
-          </button>
-        )}
-        <span className="cs-label">
-          Drag to move · side handles re-wrap the text · double-click to retype
-        </span>
-      </div>
-    );
-  }
-
-  // Selection overrides tool: show quick controls for the selected object.
-  if (s.tool === "select" && sel) {
-    return (
-      <div className="ctx-strip">
-        <span className="cs-label">Selected: {selLabel(sel.type)}</span>
-        {"color" in sel && sel.type !== "note" && (
-          <SwatchRow
-            colors={sel.type === "highlight" ? HIGHLIGHT_COLORS : TEXT_COLORS}
-            value={(sel as any).color}
-            onPick={(c) => s.updateAnnot(sel.id, { color: c } as any, true)}
-          />
-        )}
-        {"stroke" in sel && (
-          <SwatchRow
-            colors={STROKE_COLORS} value={(sel as any).stroke}
-            onPick={(c) => s.updateAnnot(sel.id, { stroke: c } as any, true)}
-          />
-        )}
-        {("strokeWidth" in sel || sel.type === "ink") && (
-          <WidthSlider
-            value={(sel as any).strokeWidth ?? (sel as any).width}
-            onChange={(v) =>
-              s.updateAnnot(sel.id,
-                ("strokeWidth" in sel ? { strokeWidth: v } : { width: v }) as any)}
-          />
-        )}
-        <span className="cs-label">More options in the Properties panel →</span>
-      </div>
-    );
-  }
-
-  switch (s.tool) {
-    case "select":
-      return <div className="ctx-strip"><span className="cs-label">Click an object to select it · drag to move · Delete to remove</span></div>;
-    case "form": {
-      const pending = Object.entries(s.formDraft).filter(([xref, v]) =>
-        s.formFields.some((f) => f.xref === Number(xref) && f.value !== v)).length;
-      return (
-        <div className="ctx-strip">
-          <span className="cs-label">
-            {s.formFields.length
-              ? `${s.formFields.length} form field${s.formFields.length > 1 ? "s" : ""} — click one to fill it`
-              : "This document has no fillable form fields"}
-          </span>
-          {pending > 0 && (
-            <>
-              <span className="cs-label" style={{ color: "var(--warn)" }}>
-                {pending} unsaved change{pending > 1 ? "s" : ""}
-              </span>
-              <button className="btn small primary" onClick={() => s.applyFields()}>
-                Save fields to PDF
-              </button>
-            </>
-          )}
-        </div>
-      );
-    }
-    case "edit-text":
-      return (
-        <div className="ctx-strip">
-          <span className="cs-label">
-            Click a text block to pick it up — drag to move, pull the side
-            handles to re-wrap, use the knob to rotate, double-click to retype.
-            Double-click empty space for a new text box.
-          </span>
-        </div>
-      );
-    case "text":
-      return (
-        <div className="ctx-strip">
-          <select
-            className="select" style={{ width: 110, padding: "5px 8px" }}
-            value={s.opts.fontFamily}
-            onChange={(e) => s.setOpts({ fontFamily: e.target.value as any })}
-          >
-            <option value="helv">Helvetica</option>
-            <option value="tiro">Times</option>
-            <option value="cour">Courier</option>
-          </select>
-          <input
-            className="input" type="number" min={6} max={96}
-            style={{ width: 58, padding: "5px 6px" }}
-            value={s.opts.fontSize}
-            onChange={(e) => s.setOpts({ fontSize: Number(e.target.value) || 12 })}
-          />
-          <button
-            className={`icon-btn ${s.opts.bold ? "active" : ""}`}
-            onClick={() => s.setOpts({ bold: !s.opts.bold })}
-          ><Bold size={15} /></button>
-          <button
-            className={`icon-btn ${s.opts.italic ? "active" : ""}`}
-            onClick={() => s.setOpts({ italic: !s.opts.italic })}
-          ><Italic size={15} /></button>
-          <SwatchRow colors={TEXT_COLORS} value={s.opts.fontColor}
-            onPick={(c) => s.setOpts({ fontColor: c })} />
-          <span className="cs-label">Click the page to place a text box</span>
-        </div>
-      );
-    case "highlight":
-    case "underline":
-    case "strikeout":
-      return (
-        <div className="ctx-strip">
-          <SwatchRow colors={HIGHLIGHT_COLORS} value={s.opts.highlightColor}
-            onPick={(c) => s.setOpts({ highlightColor: c })} />
-          <span className="cs-label">Drag across text on the page, release to apply</span>
-        </div>
-      );
-    case "pen":
-      return (
-        <div className="ctx-strip">
-          <SwatchRow colors={STROKE_COLORS} value={s.opts.color}
-            onPick={(c) => s.setOpts({ color: c })} />
-          <WidthSlider value={s.opts.strokeWidth}
-            onChange={(v) => s.setOpts({ strokeWidth: v })} />
-          <span className="cs-label">{s.opts.strokeWidth.toFixed(1)} pt</span>
-        </div>
-      );
-    case "rect":
-    case "ellipse":
-    case "line":
-    case "arrow":
-      return (
-        <div className="ctx-strip">
-          <span className="cs-label">Stroke</span>
-          <SwatchRow colors={STROKE_COLORS} value={s.opts.color}
-            onPick={(c) => s.setOpts({ color: c })} />
-          <WidthSlider value={s.opts.strokeWidth}
-            onChange={(v) => s.setOpts({ strokeWidth: v })} />
-          {(s.tool === "rect" || s.tool === "ellipse") && (
-            <>
-              <span className="cs-label">Fill</span>
-              <div className="swatch-row">
-                <button
-                  className={`swatch none ${s.opts.fillColor === null ? "active" : ""}`}
-                  title="No fill" onClick={() => s.setOpts({ fillColor: null })}
-                />
-                {STROKE_COLORS.slice(0, 5).map((c) => (
-                  <button key={c} className={`swatch ${s.opts.fillColor === c ? "active" : ""}`}
-                    style={{ background: c }} onClick={() => s.setOpts({ fillColor: c })} />
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      );
-    case "image":
-      return <div className="ctx-strip"><span className="cs-label">Choose a JPG or PNG — it is placed on the current page</span></div>;
-    case "note":
-      return (
-        <div className="ctx-strip">
-          <SwatchRow colors={NOTE_COLORS} value={s.opts.noteColor}
-            onPick={(c) => s.setOpts({ noteColor: c })} />
-          <span className="cs-label">Click the page to pin a sticky note</span>
-        </div>
-      );
-    case "link":
-      return <div className="ctx-strip"><span className="cs-label">Drag a box over text or an image, then enter the URL</span></div>;
-    default:
-      return null;
-  }
+function Sep() {
+  return <div className="tb-sep" />;
 }
 
-function selLabel(t: string) {
-  const names: Record<string, string> = {
-    text: "text box", textblock: "text block", highlight: "highlight",
-    underline: "underline", strikeout: "strike-through", ink: "pen stroke",
-    rect: "rectangle", ellipse: "ellipse", line: "line", arrow: "arrow",
-    image: "image", note: "sticky note", link: "hyperlink",
-  };
-  return names[t] ?? t;
-}
-
-function SwatchRow({ colors, value, onPick }: {
-  colors: string[]; value: string; onPick: (c: string) => void;
+function TBtn({ icon, title, active, disabled, onClick }: {
+  icon: React.ReactNode; title: string;
+  active?: boolean; disabled?: boolean; onClick?: () => void;
 }) {
   return (
-    <div className="swatch-row">
-      {colors.map((c) => (
-        <button
-          key={c} className={`swatch ${value === c ? "active" : ""}`}
-          style={{ background: c, border: c === "#ffffff" ? "2px solid #555" : undefined }}
-          onClick={() => onPick(c)}
-        />
-      ))}
+    <button className={`tb-btn ${active ? "active" : ""}`}
+      title={title} disabled={disabled} onClick={onClick}>
+      {icon}
+    </button>
+  );
+}
+
+function ToolBtn({ tool }: { tool: Tool }) {
+  const s = useEditor();
+  const def = T[tool];
+  return (
+    <TBtn
+      icon={def.icon}
+      title={def.key ? `${def.label} (${def.key})` : def.label}
+      active={s.tool === tool}
+      onClick={() => {
+        if (tool === "form" && !s.formFields.length)
+          s.toast("This document has no fillable form fields", "info");
+        s.setTool(tool);
+      }}
+    />
+  );
+}
+
+/** Anchored dropdown. Fixed-positioned so the scrolling toolbar can't clip it. */
+function Menu({ title, icon, label, width = 180, active, children }: {
+  title: string; icon?: React.ReactNode; label?: string; width?: number;
+  active?: boolean;
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [open]);
+
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) {
+      setPos({
+        top: r.bottom + 6,
+        left: Math.max(6, Math.min(r.left, window.innerWidth - width - 8)),
+      });
+    }
+    setOpen(true);
+  };
+
+  return (
+    <div className="tb-menu" ref={ref}>
+      <button ref={btnRef}
+        className={`tb-btn tb-drop ${open || active ? "active" : ""}`}
+        title={title} onClick={toggle}>
+        {icon}
+        {label && <span className="tb-lbl">{label}</span>}
+        <ChevronDown size={12} className="tb-caret" />
+      </button>
+      {open && (
+        <div className="tb-pop" style={{ top: pos.top, left: pos.left, width }}>
+          {children(() => setOpen(false))}
+        </div>
+      )}
     </div>
   );
 }
 
-function WidthSlider({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+function MenuItem({ icon, label, active, disabled, onClick }: {
+  icon?: React.ReactNode; label: string;
+  active?: boolean; disabled?: boolean; onClick: () => void;
+}) {
   return (
-    <input
-      type="range" min={0.5} max={14} step={0.5} value={value}
-      style={{ width: 90 }}
-      onChange={(e) => onChange(Number(e.target.value))}
-    />
+    <button className={`tb-item ${active ? "active" : ""}`}
+      disabled={disabled} onClick={onClick}>
+      <span className="tb-item-ico">{icon}</span>
+      {label}
+    </button>
+  );
+}
+
+function MenuSep() {
+  return <div className="tb-item-sep" />;
+}
+
+function MenuRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="tb-item-row">
+      <span>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+/** Compact colour control: swatch grid + a native picker for anything else. */
+function ColorDropdown({ icon, colors, value, onPick, title, allowNone }: {
+  icon: React.ReactNode; colors: string[]; value: string | null;
+  onPick: (c: string | null) => void; title: string; allowNone?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const ref = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const customRef = useRef<HTMLInputElement>(null);
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("mousedown", close);
+    return () => window.removeEventListener("mousedown", close);
+  }, [open]);
+
+  // native `change` fires once when the OS picker closes; React's onChange maps
+  // to `input`, which fires every drag frame and would spam undo + re-bakes
+  useEffect(() => {
+    const el = customRef.current;
+    if (!open || !el) return;
+    const commit = () => { pickRef.current(el.value); setOpen(false); };
+    el.addEventListener("change", commit);
+    return () => el.removeEventListener("change", commit);
+  }, [open]);
+
+  const toggle = () => {
+    if (open) { setOpen(false); return; }
+    const r = btnRef.current?.getBoundingClientRect();
+    if (r) {
+      setPos({
+        top: r.bottom + 6,
+        left: Math.max(6, Math.min(r.left, window.innerWidth - 252)),
+      });
+    }
+    setOpen(true);
+  };
+
+  return (
+    <div className="tb-menu" ref={ref}>
+      <button ref={btnRef} className="tb-btn tb-color" title={title} onClick={toggle}>
+        {icon}
+        <span className={`tb-color-bar ${value === null ? "none" : ""}`}
+          style={value ? { background: value } : undefined} />
+      </button>
+      {open && (
+        <div className="rbn-cdd-pop" style={{ top: pos.top, left: pos.left }}>
+          {allowNone && (
+            <button className={`swatch none ${value === null ? "active" : ""}`}
+              title="No fill" onClick={() => { onPick(null); setOpen(false); }} />
+          )}
+          {colors.map((c) => (
+            <button key={c} className={`swatch ${value === c ? "active" : ""}`}
+              style={{ background: c, border: c === "#ffffff" ? "2px solid #555" : undefined }}
+              onClick={() => { onPick(c); setOpen(false); }} />
+          ))}
+          <label className="rbn-cdd-more" title="Custom colour…">
+            <input ref={customRef} type="color" defaultValue={value ?? "#000000"} />
+            More…
+          </label>
+        </div>
+      )}
+    </div>
   );
 }

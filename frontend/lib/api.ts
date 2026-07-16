@@ -1,5 +1,5 @@
 import type {
-  Annot, BakedNote, FileMeta, FormField, OutlineItem, Paragraph,
+  Annot, BakedNote, ComparisonResult, FileMeta, FormField, OutlineItem, Paragraph,
 } from "./types";
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
@@ -9,7 +9,7 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
     try {
       const body = await res.json();
       if (body?.detail) msg = typeof body.detail === "string" ? body.detail : msg;
-    } catch { }
+    } catch {}
     throw new Error(msg);
   }
   return res.json();
@@ -42,6 +42,8 @@ export const api = {
     req<{ ok: boolean }>(`/api/files/${id}/restore`, { method: "POST" }),
 
   contentUrl: (id: string, version: number) => `/api/files/${id}/content?v=${version}`,
+
+  fonts: () => req<{ families: string[] }>("/api/fonts"),
 
   outline: (id: string) => req<OutlineItem[]>(`/api/files/${id}/outline`),
   paragraphs: (id: string, page: number) =>
@@ -92,7 +94,7 @@ export const api = {
     );
     if (!res.ok) {
       let msg = `${res.status}`;
-      try { msg = (await res.json()).detail ?? msg; } catch { }
+      try { msg = (await res.json()).detail ?? msg; } catch {}
       throw new Error(msg);
     }
     const dispo = res.headers.get("Content-Disposition") ?? "";
@@ -101,4 +103,36 @@ export const api = {
   },
 
   downloadUrl: (id: string) => `/api/files/${id}/download`,
+
+  compare: (original: File | null, revised: File | null, originalId?: string, compareVersions?: boolean) => {
+    const fd = new FormData();
+    if (original) {
+      fd.append("original", original);
+    }
+    if (revised) {
+      fd.append("revised", revised);
+    }
+    if (originalId) {
+      fd.append("original_id", originalId);
+    }
+    if (compareVersions) {
+      fd.append("compare_versions", "true");
+    }
+    return req<ComparisonResult>("/api/files/compare", { method: "POST", body: fd });
+  },
+
+  exportCompareReport: async (summary: ComparisonResult) => {
+    const res = await fetch("/api/files/compare/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ summary }),
+    });
+    if (!res.ok) {
+      throw new Error("Failed to export report");
+    }
+    return res.blob();
+  },
+
+  summarize: (id: string, mode: "short" | "medium" | "detailed" = "medium") =>
+    req<{ summary: string }>(`/api/files/${id}/summarize`, json({ mode })),
 };

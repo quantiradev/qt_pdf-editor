@@ -17,7 +17,7 @@ import TopBar from "./TopBar";
 
 const TOOL_KEYS: Record<string, Tool> = {
   v: "select", e: "edit-text", f: "form", t: "text", h: "highlight",
-  u: "underline", s: "strikeout", p: "pen", r: "rect", o: "ellipse",
+  u: "underline", s: "strikeout", p: "pen", x: "eraser", r: "rect", o: "ellipse",
   l: "line", a: "arrow", n: "note", k: "link",
 };
 

@@ -18,6 +18,8 @@ from pathlib import Path
 
 import fitz  # PyMuPDF
 
+import fonts
+
 # ---------------------------------------------------------------- constants
 
 BASE14 = {
@@ -36,6 +38,8 @@ BULLET_RE = re.compile(r"^(?:[•‣▪●◦⁃∙\-\*·]|"
                        r"[0-9]{1,3}[.)]|[a-zA-Z][.)]|[ivxIVX]{1,5}[.)])$")
 
 _JOIN_GAP_FACTOR = 0.45      # gaps wider than this * size get a space on join
+_INTRA_SPAN_GAP = 0.15       # intra-line span gap threshold for inserting word spaces
+_SPLIT_LAYOUT_GAP = 4.5      # gaps wider than this * size → new VLine (column split)
 _SAME_LINE_TOL = 0.40        # baseline delta tolerance, * size
 _CROSS_BLOCK_GAP = 2.6       # max horizontal gap for same-line block merge, * size
 _PARA_GAP_FACTOR = 1.65      # vertical split when baseline delta exceeds * leading
@@ -60,7 +64,8 @@ def _flags_style(font: str, flags: int) -> tuple[str, bool, bool]:
     f = font.lower()
     mono = bool(flags & 8) or "mono" in f or "courier" in f or "consol" in f
     serif = (bool(flags & 4) and "arial" not in f and "calibri" not in f) \
-        or "times" in f or "georgia" in f or "garamond" in f or "book" in f
+        or "times" in f or "roman" in f or "georgia" in f \
+        or "garamond" in f or "book" in f
     bold = bool(flags & 16) or "bold" in f or "black" in f or "heavy" in f
     italic = bool(flags & 2) or "italic" in f or "oblique" in f
     fam = "mono" if mono else ("serif" if serif else "sans")
@@ -159,9 +164,9 @@ class FontPool:
         self._by_name: dict[str, fitz.Font | None] = {}
         self._buffers: dict[str, bytes] = {}
         self._sys_fonts: dict[str, fitz.Font | None] = {}
+        self._google: dict[str, fitz.Font | None] = {}
         self._aliases: dict[tuple[int, str], str] = {}  # (page.xref, source) -> alias
         self._page_fonts: dict[int, list] = {}
-        self._page_chars: dict[int, set[str]] = {}
         self._alias_n = 0
         self.embedded_new_font = False  # a full system font went in -> subset on save
 
@@ -231,30 +236,41 @@ class FontPool:
                     is_subset = True
                 break
 
-        # Extract all non-space characters from the original page text to check glyph coverage
-        if page.number not in self._page_chars:
-            try:
-                self._page_chars[page.number] = {c for c in page.get_text() if not c.isspace()}
-            except Exception:
-                self._page_chars[page.number] = set()
-        allowed_chars = self._page_chars[page.number]
-
         font = self._load(page, span_font)
-        # We can only use the embedded font if it reports that it has the glyphs, AND
-        # either it is not a subset font, or all the requested characters were already
-        # present in the original page text (meaning their visual glyph data is guaranteed to exist).
-        use_embedded = False
-        if font is not None and covers(font):
-            if not is_subset:
-                use_embedded = True
-            elif chars.issubset(allowed_chars):
-                use_embedded = True
+        # Only reuse a full (non-subset) embedded font. insert_text re-embeds
+        # the face as a Type0 / Identity-H CID font; for a subset Type1 source
+        # PyMuPDF's glyph-index mapping renders correctly in MuPDF but is mapped
+        # differently by pdf.js (the browser viewer) — every glyph shifts by the
+        # subset's charset offset, so the on-screen title turns to garble while
+        # the ToUnicode text layer stays correct. The metric-matched standard
+        # font below encodes identically in both renderers.
+        # ponytail: subset faces fall back to Base-14/system (near-identical for
+        # the Times/Courier clones here); upgrade path is to re-embed the subset
+        # as a simple WinAnsi Type1 to keep exact fidelity without the CID remap.
+        use_embedded = font is not None and covers(font) and not is_subset
 
         if use_embedded and font is not None:
             alias = self._ensure_alias(page, "emb:" + span_font,
                                        fontbuffer=self._buffers[span_font])
             if alias:
                 return alias, font
+
+        # a Google Fonts family the user picked in the editor: fetch its TTF
+        # once (cached on disk) and embed the real face
+        gpath = fonts.font_path(span_font, bool(flags & 16), bool(flags & 2))
+        if gpath:
+            gfont = self._google.get(gpath)
+            if gpath not in self._google:
+                try:
+                    gfont = fitz.Font(fontfile=gpath)
+                except Exception:
+                    gfont = None
+                self._google[gpath] = gfont
+            if gfont is not None and covers(gfont):
+                alias = self._ensure_alias(page, "gf:" + gpath, fontfile=gpath)
+                if alias:
+                    self.embedded_new_font = True
+                    return alias, gfont
 
         if span_font not in self._sys_fonts:
             path = _system_lookup(span_font, flags)
@@ -357,9 +373,10 @@ class Paragraph:
                     out[-1].text = out[-1].text[:-1]      # de-hyphenate wraps
                 elif out and not out[-1].text.endswith(" "):
                     out[-1].text += " "
-        # normalise runaway whitespace
+        # normalise runaway whitespace: collapse 3+ spaces to 2, preserving
+        # deliberate double-spaces from the original PDF content
         for r in out:
-            r.text = re.sub(r"[ \t ]+", " ", r.text)
+            r.text = re.sub(r"[ \t\u00a0]{3,}", "  ", r.text)
         return [r for r in out if r.text]
 
     @property
@@ -412,17 +429,34 @@ def _visual_lines(block: dict) -> list[VLine]:
             merged.append(target)
         else:
             gap = x0 - target.x1
-            if gap > _JOIN_GAP_FACTOR * size and target.runs \
-                    and not target.runs[-1].text.endswith(" "):
-                target.runs.append(Run(" ", spans[0]["font"], size,
-                                       spans[0]["color"], spans[0]["flags"]))
-            target.x0 = min(target.x0, x0)
-            target.x1 = max(target.x1, x1)
-            target.y0 = min(target.y0, y0)
-            target.y1 = max(target.y1, y1)
+            # Very wide gaps indicate separate layout columns — start a new VLine
+            # rather than joining with a space. This prevents e.g. three tab-stop
+            # labels on the same baseline from collapsing into one editable block.
+            if gap > _SPLIT_LAYOUT_GAP * size:
+                target = VLine(x0, y0, x1, y1, baseline)
+                merged.append(target)
+            else:
+                if gap > _JOIN_GAP_FACTOR * size and target.runs \
+                        and not target.runs[-1].text.endswith(" "):
+                    target.runs.append(Run(" ", spans[0]["font"], size,
+                                           spans[0]["color"], spans[0]["flags"]))
+                target.x0 = min(target.x0, x0)
+                target.x1 = max(target.x1, x1)
+                target.y0 = min(target.y0, y0)
+                target.y1 = max(target.y1, y1)
+        prev_span_right = None
         for s in spans:
+            # Detect word spaces encoded as positional gaps between spans
+            if prev_span_right is not None and target.runs:
+                intra_gap = s["bbox"][0] - prev_span_right
+                if (intra_gap > _INTRA_SPAN_GAP * s["size"]
+                        and not target.runs[-1].text.endswith(" ")
+                        and not s["text"].startswith(" ")):
+                    target.runs.append(Run(" ", s["font"], s["size"],
+                                           s["color"], s["flags"]))
             target.runs.append(Run(s["text"], s["font"], s["size"],
                                    s["color"], s["flags"], s["origin"][0]))
+            prev_span_right = s["bbox"][2]
     return merged
 
 
@@ -623,6 +657,93 @@ def _map_runs(old_runs: list[Run], new_text: str) -> list[Run]:
     return [r for r in out if r.text]
 
 
+_FAM_FONT = {"helv": "Helvetica", "tiro": "Times", "cour": "Courier"}
+
+
+def _hex_int(value) -> int | None:
+    """'#rrggbb' -> packed sRGB int (the form Run.color / MuPDF use)."""
+    try:
+        return int(str(value).lstrip("#"), 16)
+    except (TypeError, ValueError):
+        return None
+
+
+def _style_overrides(p: "Paragraph", blk: dict | None) -> dict:
+    """Style attributes the block explicitly changed from the paragraph's
+    dominant style. Only these are forced onto the re-wrapped text, so an
+    untouched move keeps the original per-run styling."""
+    if not blk:
+        return {}
+    dom = p.dominant()
+    fam0, bold0, italic0 = _flags_style(dom.font, dom.flags)
+    ov: dict = {}
+    if blk.get("bold") is not None and bool(blk["bold"]) != bold0:
+        ov["bold"] = bool(blk["bold"])
+    if blk.get("italic") is not None and bool(blk["italic"]) != italic0:
+        ov["italic"] = bool(blk["italic"])
+    col = _hex_int(blk.get("color")) if blk.get("color") else None
+    if col is not None and col != dom.color:
+        ov["color"] = col
+    fam = blk.get("fontFamily")
+    if fam and fam != FAMILY_CSS[fam0]:
+        ov["family"] = fam   # a Base-14 alias or any Google Fonts family
+    if blk.get("fontSize") is not None:
+        sz = num(blk["fontSize"], dom.size)
+        if abs(sz - dom.size) > 0.1:
+            ov["size"] = sz
+    return ov
+
+
+def _styled_runs(p: "Paragraph", new_text: str, blk: dict | None) -> list["Run"]:
+    """Re-wrap runs for `new_text`, applying any block-level style change
+    (bold / italic / colour / font / size) uniformly so the bake matches the
+    editor overlay, which styles the whole block at once."""
+    runs = _map_runs(p.runs_flat(), new_text)
+    ov = _style_overrides(p, blk)
+    if not ov:
+        return runs
+    for r in runs:
+        if "bold" in ov:
+            r.flags = (r.flags | 16) if ov["bold"] else (r.flags & ~16)
+        if "italic" in ov:
+            r.flags = (r.flags | 2) if ov["italic"] else (r.flags & ~2)
+        if "color" in ov:
+            r.color = ov["color"]
+        if "size" in ov:
+            r.size = ov["size"]
+        if "family" in ov:
+            # Base-14 alias -> its canonical name; anything else is a Google
+            # family, carried through verbatim for FontPool.resolve to fetch
+            r.font = _FAM_FONT.get(ov["family"], ov["family"])
+            r.flags &= ~(4 | 8)   # let the font name / real face drive serif+mono
+    return runs
+
+
+def _blk_align(p: "Paragraph", blk: dict | None) -> str:
+    a = (blk or {}).get("align")
+    return a if a in ("left", "center", "right", "justify") else p.align
+
+
+def _blk_leading(p: "Paragraph", blk: dict | None) -> float | None:
+    """Explicit line spacing (pt) if the block set one, else None (path default)."""
+    if blk and blk.get("leading") is not None:
+        v = num(blk["leading"], p.leading)
+        if v > 0.5:
+            return v
+    return None
+
+
+def _block_restyled(p: "Paragraph", blk: dict | None) -> bool:
+    """True if the block changed any run style, alignment, or line spacing —
+    such a block must bake even when its geometry and text are untouched."""
+    if _style_overrides(p, blk):
+        return True
+    if _blk_align(p, blk) != p.align:
+        return True
+    lead = _blk_leading(p, blk)
+    return lead is not None and abs(lead - p.leading) > 0.1
+
+
 @dataclass
 class _Seg:
     text: str
@@ -804,15 +925,18 @@ def _measure_words(page: fitz.Page, runs: list[Run], pool: FontPool
 
 
 def _build_edit_ops(page: fitz.Page, p: Paragraph, new_text: str,
-                    pool: FontPool, shift: float) -> tuple[list[_LineOp], float]:
+                    pool: FontPool, shift: float,
+                    blk: dict | None = None) -> tuple[list[_LineOp], float]:
     """Line ops for one rewritten paragraph (baselines pre-shifted by `shift`)
     and its vertical growth in points (negative when the text shrank)."""
     new_text = re.sub(r"\s+", " ", new_text).strip()
     if not new_text:
         return [], -len(p.lines) * p.leading  # paragraph deleted
-    runs = _map_runs(p.runs_flat(), new_text)
+    runs = _styled_runs(p, new_text, blk)
     if not runs:
         return [], 0.0
+    align = _blk_align(p, blk)
+    lead = _blk_leading(p, blk) or p.leading
 
     words, needed_by_style, resolved = _measure_words(page, runs, pool)
     if not words:
@@ -857,11 +981,11 @@ def _build_edit_ops(page: fitz.Page, p: Paragraph, new_text: str,
         avail = first_avail if li == 0 else body_avail
         natural = sum(w.width for w in line) + sum(w.space for w in line[1:])
         extra = 0.0
-        if p.align == "justify" and li < len(lines) - 1 and len(line) > 1:
+        if align == "justify" and li < len(lines) - 1 and len(line) > 1:
             extra = max(0.0, (avail - natural) / (len(line) - 1))
-        elif p.align == "center":
+        elif align == "center":
             x_start += max(0.0, (avail - natural) / 2)
-        elif p.align == "right":
+        elif align == "right":
             x_start += max(0.0, avail - natural)
 
         x = x_start
@@ -871,8 +995,8 @@ def _build_edit_ops(page: fitz.Page, p: Paragraph, new_text: str,
             for seg in w.segs:
                 pieces.append(piece(seg, x))
                 x += seg.width
-        ops.append(_LineOp(pieces, base0 + li * p.leading, height, p.leading))
-    return ops, (len(lines) - len(p.lines)) * p.leading
+        ops.append(_LineOp(pieces, base0 + li * lead, height, lead))
+    return ops, len(lines) * lead - len(p.lines) * p.leading
 
 
 def _flow_into(doc: fitz.Document, pno: int, incoming: list[_LineOp],
@@ -932,12 +1056,12 @@ def apply_paragraph_edits(doc: fitz.Document, pno: int,
     page = doc[pno]
     paras_all = extract_paragraphs(doc, pno)
     by_id = {p.id: p for p in paras_all}
-    todo: dict[str, str] = {}
+    todo: dict[str, dict] = {}
     for e in edits:
         p = by_id.get(e.get("paraId", ""))
         if p is None:
             raise ValueError("The text block changed on disk — reload and retry")
-        todo[p.id] = str(e.get("text", ""))
+        todo[p.id] = e
 
     warnings: list[str] = []
     changed: set[int] = {pno}
@@ -950,11 +1074,12 @@ def apply_paragraph_edits(doc: fitz.Document, pno: int,
     delta = 0.0
     for p in sorted(paras_all, key=lambda q: (q.lines[0].baseline, q.bbox.x0)):
         if p.id in todo:
+            blk = todo[p.id]
             for vl in p.lines:
                 redact.append(_line_rect(vl))
             in_body = p.id in body_ids
-            ops, growth = _build_edit_ops(page, p, todo[p.id], pool,
-                                          delta if in_body else 0.0)
+            ops, growth = _build_edit_ops(page, p, str(blk.get("text", "")), pool,
+                                          delta if in_body else 0.0, blk)
             if in_body:
                 flow_ops += ops
                 delta += max(0.0, growth)
@@ -1005,16 +1130,17 @@ def _near_zero_angle(deg: float) -> bool:
 
 
 def _build_box_ops(page: fitz.Page, p: Paragraph, new_text: str,
-                   pool: FontPool, x: float, y: float, w: float
-                   ) -> list[_LineOp]:
-    """Wrap `new_text` (styles carried over from the paragraph) into a box of
-    width `w` whose top-left is (x, y). Baselines follow the paragraph's own
-    leading using the CSS line-box model (half-leading), so the bake matches
-    the editor's HTML overlay line for line."""
+                   pool: FontPool, x: float, y: float, w: float,
+                   blk: dict | None = None) -> list[_LineOp]:
+    """Wrap `new_text` (styles carried over from the paragraph, or overridden
+    by the block's own style) into a box of width `w` whose top-left is (x, y).
+    Baselines follow the paragraph's own leading using the CSS line-box model
+    (half-leading), so the bake matches the editor's HTML overlay line for
+    line."""
     new_text = re.sub(r"\s+", " ", new_text).strip()
     if not new_text:
         return []
-    runs = _map_runs(p.runs_flat(), new_text)
+    runs = _styled_runs(p, new_text, blk)
     if not runs:
         return []
     words, needed_by_style, resolved = _measure_words(page, runs, pool)
@@ -1023,7 +1149,8 @@ def _build_box_ops(page: fitz.Page, p: Paragraph, new_text: str,
 
     lines = _layout_words(words, w, w)
     dom_size = max(r.size for r in runs)
-    leading = max(p.leading, dom_size * 0.9)
+    align = _blk_align(p, blk)
+    leading = _blk_leading(p, blk) or max(p.leading, dom_size * 0.9)
     mfont = resolved[_style_key(runs[0])][1]
     asc = mfont.ascender if 0.5 < (mfont.ascender or 0) < 1.2 else 0.8
     desc = abs(mfont.descender) if -1.0 < (mfont.descender or 0) < 0 else 0.2
@@ -1038,11 +1165,11 @@ def _build_box_ops(page: fitz.Page, p: Paragraph, new_text: str,
         natural = sum(wd.width for wd in line) + sum(wd.space for wd in line[1:])
         x_start = x
         extra = 0.0
-        if p.align == "justify" and li < len(lines) - 1 and len(line) > 1:
+        if align == "justify" and li < len(lines) - 1 and len(line) > 1:
             extra = max(0.0, (w - natural) / (len(line) - 1))
-        elif p.align == "center":
+        elif align == "center":
             x_start += max(0.0, (w - natural) / 2)
-        elif p.align == "right":
+        elif align == "right":
             x_start += max(0.0, w - natural)
 
         pieces: list[_Piece] = []
@@ -1079,10 +1206,13 @@ def split_block_ops(doc: fitz.Document, pno: int, blocks: list[dict]
                      and abs(num(b.get("y"), r.y0) - r.y0) < 0.5
                      and abs(num(b.get("w"), r.width) - r.width) < 0.5)
         text = str(b.get("text", ""))
+        restyled = _block_restyled(p, b)
         if same_geom and _near_zero_angle(num(b.get("rotate"), 0.0)):
-            if text == p.text:
+            if text == p.text and not restyled:
                 continue  # nothing changed at all
-            reflow.append({"paraId": b["paraId"], "text": text})
+            # keep the full block dict so a bold/italic/colour/font/size-only
+            # edit still carries its style into the reflow bake
+            reflow.append(b)
         else:
             free.append(b)
     return reflow, free
@@ -1118,7 +1248,7 @@ def apply_block_ops(doc: fitz.Document, pno: int, blocks: list[dict],
         x = num(b.get("x"), r.x0)
         y = num(b.get("y"), r.y0)
         w = max(20.0, num(b.get("w"), r.width))
-        ops = _build_box_ops(page, p, text, pool, x, y, w)
+        ops = _build_box_ops(page, p, text, pool, x, y, w, b)
         if not ops:
             continue
 
