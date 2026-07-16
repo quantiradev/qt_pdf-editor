@@ -2219,5 +2219,16 @@
     "updated_at": 1784202901.5861847,
     "opened_at": 1784202901.5861847,
     "deleted": false
+  },
+  "d93e70acc23b": {
+    "id": "d93e70acc23b",
+    "name": "resume.pdf",
+    "size": 106078,
+    "pages": 1,
+    "version": 1,
+    "created_at": 1784205453.38458,
+    "updated_at": 1784205453.38458,
+    "opened_at": 1784205453.38458,
+    "deleted": false
   }
 }
